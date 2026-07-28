@@ -140,13 +140,22 @@ class GasCosts:
     )
 
     # Blobs
+    #
+    # The per-block blob schedule is rescaled from the previous fork's
+    # target of 14 and maximum of 21 by the slot-duration ratio
+    # (10s / 12s), keeping blob throughput per unit of wall-clock time
+    # approximately constant under the shorter slot: 21 * 10 // 12 = 17
+    # and 14 * 10 / 12 = 11.67, rounded to 12. The update fraction is
+    # rescaled so that the maximum sustained blob base fee growth rate
+    # per unit of wall-clock time is preserved:
+    # 11684671 * (17 - 12) / (21 - 14) * 12 / 10 = 10015432.
     PER_BLOB: Final[U64] = U64(2**17)
-    BLOB_SCHEDULE_TARGET: Final[U64] = U64(14)
+    BLOB_SCHEDULE_TARGET: Final[U64] = U64(12)
     BLOB_TARGET_GAS_PER_BLOCK: Final[U64] = PER_BLOB * BLOB_SCHEDULE_TARGET
     BLOB_BASE_COST: Final[Uint] = Uint(2**13)
-    BLOB_SCHEDULE_MAX: Final[U64] = U64(21)
+    BLOB_SCHEDULE_MAX: Final[U64] = U64(17)
     BLOB_MIN_GASPRICE: Final[Uint] = Uint(1)
-    BLOB_BASE_FEE_UPDATE_FRACTION: Final[Uint] = Uint(11684671)
+    BLOB_BASE_FEE_UPDATE_FRACTION: Final[Uint] = Uint(10015432)
 
     # Block Access Lists
     BLOCK_ACCESS_LIST_ITEM: Final[ExecutionGas] = ExecutionGas(Uint(2000))
