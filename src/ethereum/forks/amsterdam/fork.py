@@ -109,11 +109,30 @@ from .vm.interpreter import MessageCallOutput, process_message_call
 
 BASE_FEE_MAX_CHANGE_DENOMINATOR = Uint(8)
 ELASTICITY_MULTIPLIER = Uint(2)
+SLOT_DURATION_MS = Uint(10000)
+"""
+Duration of a consensus-layer slot from this fork onward, in milliseconds.
+
+Blocks arrive every 10 seconds instead of 12. Per-block rates (the base
+fee adjustment, the gas limit, the blob schedule) are rescaled by the
+exact ratio ``SLOT_DURATION_MS / PREVIOUS_SLOT_DURATION_MS`` so that
+their behavior per unit of wall-clock time is unchanged.
+"""
+PREVIOUS_SLOT_DURATION_MS = Uint(12000)
+"""
+Duration of a consensus-layer slot before this fork, in milliseconds.
+"""
 EMPTY_OMMER_HASH = keccak256(rlp.encode([]))
 SYSTEM_ADDRESS = hex_to_address("0xfffffffffffffffffffffffffffffffffffffffe")
 BEACON_ROOTS_ADDRESS = hex_to_address(
     "0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02"
 )
+"""
+Address of the beacon roots ring buffer contract. Its 8191-entry buffer
+holds one root per slot, so its wall-clock coverage shrinks from ~27.3
+hours to ~22.8 hours under 10-second slots. The buffer length is part of
+the deployed contract and is deliberately not changed by this fork.
+"""
 SYSTEM_TRANSACTION_GAS = Uint(30000000)
 SYSTEM_MAX_SSTORES_PER_CALL = Uint(16)
 """
@@ -141,6 +160,12 @@ BUILDER_EXIT_CONTRACT_ADDRESS = hex_to_address(
 HISTORY_STORAGE_ADDRESS = hex_to_address(
     "0x0000F90827F1C53a10cb7A02335B175320002935"
 )
+"""
+Address of the block hash history contract. Its 8191-entry window is
+denominated in blocks, so its wall-clock coverage shrinks from ~27.3
+hours to ~22.8 hours under 10-second slots. The window length is part of
+the deployed contract and is deliberately not changed by this fork.
+"""
 MAX_BLOCK_SIZE = 10_485_760
 SAFETY_MARGIN = 2_097_152
 MAX_RLP_BLOCK_SIZE = MAX_BLOCK_SIZE - SAFETY_MARGIN
@@ -379,20 +404,33 @@ def calculate_base_fee_per_gas(
     parent_gas_limit: Uint,
     parent_gas_used: Uint,
     parent_base_fee_per_gas: Uint,
+    gas_limit_reference: Optional[Uint] = None,
 ) -> Uint:
     """
     Calculates the base fee per gas for the block.
+
+    The maximum per-block change is scaled by the slot-duration ratio
+    ``SLOT_DURATION_MS / PREVIOUS_SLOT_DURATION_MS`` so that the fee
+    adjusts at the same rate per unit of wall-clock time as it did with
+    12-second slots.
 
     Parameters
     ----------
     block_gas_limit :
         Gas limit of the block for which the base fee is being calculated.
     parent_gas_limit :
-        Gas limit of the parent block.
+        Gas limit of the parent block, used to derive the gas target the
+        parent block was built against.
     parent_gas_used :
         Gas used in the parent block.
     parent_base_fee_per_gas :
         Base fee per gas of the parent block.
+    gas_limit_reference :
+        Reference value the block's gas limit is validated against. This
+        equals ``parent_gas_limit`` (the default) except for the first
+        block of the fork, where the parent's gas limit is rescaled by
+        the slot-duration ratio to preserve gas throughput per unit of
+        wall-clock time.
 
     Returns
     -------
@@ -400,8 +438,10 @@ def calculate_base_fee_per_gas(
         Base fee per gas for the block.
 
     """
+    if gas_limit_reference is None:
+        gas_limit_reference = parent_gas_limit
     parent_gas_target = parent_gas_limit // ELASTICITY_MULTIPLIER
-    if not check_gas_limit(block_gas_limit, parent_gas_limit):
+    if not check_gas_limit(block_gas_limit, gas_limit_reference):
         raise InvalidBlock
 
     if parent_gas_used == parent_gas_target:
@@ -412,8 +452,15 @@ def calculate_base_fee_per_gas(
         parent_fee_gas_delta = parent_base_fee_per_gas * gas_used_delta
         target_fee_gas_delta = parent_fee_gas_delta // parent_gas_target
 
+        # The per-block adjustment is scaled by the slot-duration ratio
+        # so that the base fee reacts to congestion at the same rate per
+        # unit of wall-clock time as it did with 12-second slots. The
+        # division is deferred so the effective denominator is the exact
+        # rational 48/5 rather than a rounded integer.
         base_fee_per_gas_delta = max(
-            target_fee_gas_delta // BASE_FEE_MAX_CHANGE_DENOMINATOR,
+            target_fee_gas_delta
+            * SLOT_DURATION_MS
+            // (PREVIOUS_SLOT_DURATION_MS * BASE_FEE_MAX_CHANGE_DENOMINATOR),
             Uint(1),
         )
 
@@ -427,7 +474,9 @@ def calculate_base_fee_per_gas(
         target_fee_gas_delta = parent_fee_gas_delta // parent_gas_target
 
         base_fee_per_gas_delta = (
-            target_fee_gas_delta // BASE_FEE_MAX_CHANGE_DENOMINATOR
+            target_fee_gas_delta
+            * SLOT_DURATION_MS
+            // (PREVIOUS_SLOT_DURATION_MS * BASE_FEE_MAX_CHANGE_DENOMINATOR)
         )
 
         expected_base_fee_per_gas = (
@@ -468,11 +517,26 @@ def validate_header(
     if header.gas_used > header.gas_limit:
         raise InvalidBlock
 
+    if isinstance(parent_header, Header):
+        gas_limit_reference = parent_header.gas_limit
+    else:
+        # First block of the fork: the gas limit is validated against the
+        # parent's gas limit rescaled by the slot-duration ratio, so that
+        # gas throughput per unit of wall-clock time is preserved across
+        # the transition to 10-second slots. The regular +-1/1024
+        # adjustment band applies around the rescaled value.
+        gas_limit_reference = (
+            parent_header.gas_limit
+            * SLOT_DURATION_MS
+            // PREVIOUS_SLOT_DURATION_MS
+        )
+
     expected_base_fee_per_gas = calculate_base_fee_per_gas(
         header.gas_limit,
         parent_header.gas_limit,
         parent_header.gas_used,
         parent_header.base_fee_per_gas,
+        gas_limit_reference=gas_limit_reference,
     )
     if expected_base_fee_per_gas != header.base_fee_per_gas:
         raise InvalidBlock
