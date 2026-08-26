@@ -11,6 +11,7 @@ Introduction
 Implementations of the EVM storage related instructions.
 """
 
+from ethereum_types.bytes import Bytes32
 from ethereum_types.numeric import Uint
 
 from ...fork_types import ExecutionGas, StateGas
@@ -21,6 +22,7 @@ from ...state_tracker import (
     set_storage,
     set_transient_storage,
 )
+from ...write_prepayment import STORAGE_WRITE_REPRICING_DELTA
 from .. import Evm
 from ..exceptions import WriteInStaticContext
 from ..gas import (
@@ -32,6 +34,18 @@ from ..gas import (
     credit_state_gas_refund,
 )
 from ..stack import pop, push
+
+
+def _consume_write_prepayment(evm: Evm, key: Bytes32) -> bool:
+    """Consume one transaction-boundary write prepayment."""
+    entry = (evm.current_target, key)
+    if entry not in evm.tx_env.write_prepaid_storage_keys:
+        return False
+
+    # Consumption is transaction-wide, so a reverted or OOG child cannot
+    # reuse one intrinsic prepayment in another frame.
+    evm.tx_env.write_prepaid_storage_keys.remove(entry)
+    return True
 
 
 def sload(evm: Evm) -> None:
@@ -120,7 +134,10 @@ def sstore(evm: Evm) -> None:
 
     # Write cost: charged on the first change to the slot this transaction.
     if original_value == current_value and current_value != new_value:
-        gas_cost += GasCosts.STORAGE_WRITE
+        if _consume_write_prepayment(evm, key):
+            gas_cost += GasCosts.STORAGE_WRITE - STORAGE_WRITE_REPRICING_DELTA
+        else:
+            gas_cost += GasCosts.STORAGE_WRITE
 
     # Refund Counter Calculation
     if current_value != new_value:

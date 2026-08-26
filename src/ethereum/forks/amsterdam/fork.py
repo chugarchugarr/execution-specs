@@ -103,6 +103,7 @@ from .vm.gas import (
     settle_transaction_gas,
 )
 from .vm.interpreter import TransactionOutput, process_top_level
+from .write_prepayment import find_write_prepayments
 
 BASE_FEE_MAX_CHANGE_DENOMINATOR = Uint(8)
 ELASTICITY_MULTIPLIER = Uint(2)
@@ -591,6 +592,10 @@ def check_transaction(
             for slot in access.slots:
                 access_list_storage_keys.add((access.account, slot))
 
+    write_prepaid_storage_keys = find_write_prepayments(
+        access_list_storage_keys
+    )
+
     authorizations: Tuple[Authorization, ...] = ()
     if isinstance(tx, SetCodeTransaction):
         authorizations = tx.authorizations
@@ -621,6 +626,7 @@ def check_transaction(
         calldata_floor=intrinsic.calldata_floor,
         access_list_addresses=access_list_addresses,
         access_list_storage_keys=access_list_storage_keys,
+        write_prepaid_storage_keys=write_prepaid_storage_keys,
         accounts_with_paid_writes=accounts_with_paid_writes,
         state=tx_state,
         blob_versioned_hashes=blob_versioned_hashes,
@@ -767,6 +773,7 @@ def process_unchecked_system_transaction(
         calldata_floor=Uint(0),
         access_list_addresses=set(),
         access_list_storage_keys=set(),
+        write_prepaid_storage_keys=set(),
         # A system transaction charges no gas, so no write is paid for.
         accounts_with_paid_writes=set(),
         state=system_tx_state,

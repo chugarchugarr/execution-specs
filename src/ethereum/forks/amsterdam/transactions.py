@@ -35,6 +35,11 @@ from .exceptions import (
     TransactionTypeError,
 )
 from .fork_types import Authorization, ExecutionGas, VersionedHash
+from .write_prepayment import (
+    STORAGE_WRITE_REPRICING_DELTA,
+    WRITE_PREPAYMENT_MARKER_COUNT,
+    find_write_prepayments,
+)
 
 
 @final
@@ -728,6 +733,7 @@ def calculate_intrinsic_cost(
             recipient_execution_gas += GasCosts.TX_VALUE_COST
 
     access_list_cost = Uint(0)
+    access_list_entries: set[tuple[Address, Bytes32]] = set()
     tokens_in_access_list = Uint(0)
     if has_access_list(tx):
         for access in tx.access_list:
@@ -739,6 +745,23 @@ def calculate_intrinsic_cost(
             tokens_in_access_list += (
                 ulen(access.slots) * ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS
             )
+            for slot in access.slots:
+                access_list_entries.add((access.account, slot))
+
+    # Experimental encoding: three ordinary access-list marker keys carry
+    # 6,000 gas of the 7,200 write-repricing delta. Charge the exact 1,200
+    # remainder here so a complete voucher has paid the full delta before
+    # any frame starts executing.
+    write_prepayments = find_write_prepayments(access_list_entries)
+    marker_prepayment = GasCosts.TX_ACCESS_LIST_STORAGE_KEY * Uint(
+        WRITE_PREPAYMENT_MARKER_COUNT
+    )
+    write_prepayment_remainder = (
+        STORAGE_WRITE_REPRICING_DELTA - marker_prepayment
+    )
+    write_prepayment_cost = write_prepayment_remainder * ulen(
+        write_prepayments
+    )
 
     # Data token floor cost for access list bytes.
     access_list_cost += tokens_in_access_list * GasCosts.TX_DATA_TOKEN_FLOOR
@@ -770,6 +793,7 @@ def calculate_intrinsic_cost(
             + init_code_gas
             + data_cost
             + access_list_cost
+            + write_prepayment_cost
             + auth_cost
         ),
         calldata_floor=ExecutionGas(data_floor_gas_cost),

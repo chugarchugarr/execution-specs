@@ -1,0 +1,25 @@
+name: Glamsterdam write-prepayment proof
+
+on:
+  push:
+    branches:
+      - "experiment/glamsterdam-write-prepayment"
+  workflow_dispatch:
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.14"
+      - name: Fill targeted Osaka-to-Amsterdam proof
+        run: >
+          uv run fill
+          --skip-index
+          --clean
+          --from Osaka
+          --until Amsterdam
+          --output=.just/write-prepayment/fixtures
+          tests/amsterdam/eip8038_state_access_gas_cost_increase/test_write_prepayment_prototype.py
