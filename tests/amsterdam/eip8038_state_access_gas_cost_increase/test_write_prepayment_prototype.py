@@ -1,138 +1,141 @@
 """
 Executable phase-1 proof for Glamsterdam storage-write prepayment.
 
-This test is intentionally smaller than a consensus change. It pins the
-current EELS Osaka and Amsterdam gas constants and proves the two invariants
-that must survive before a transaction encoding or EVM implementation is
-worth adding:
-
-1. identical fixed child gas: Osaka PASS -> Amsterdam FAIL -> prepaid PASS;
-2. the prepaid path preserves the full Amsterdam execution-resource charge.
-
-If either invariant fails as the Amsterdam branch changes, this prototype
-must stop rather than silently adapt its claim.
+The proof reads the Osaka and Amsterdam gas constants directly from the
+current execution-spec source tree. It must fail if those branch constants
+move enough to invalidate either the liveness transition or conservation
+claim.
 """
 
-# ruff: noqa: I001
-
-from enum import Enum
-
-from ethereum.forks.amsterdam.vm import gas as amsterdam_gas
-from ethereum.forks.osaka.vm import gas as osaka_gas
+OSAKA_GAS_PATH = "src/ethereum/forks/osaka/vm/gas.py"
+AMSTERDAM_GAS_PATH = "src/ethereum/forks/amsterdam/vm/gas.py"
 
 
-# Osaka's warm first-change write component. Osaka charges a cold existing
-# non-zero -> non-zero first change as COLD_STORAGE_WRITE=5_000 total:
-# 2_100 cold access + 2_900 write. Removing the 100 warm-access component
-# leaves the historical write component that a prewarmed child frame paid.
-LEGACY_STORAGE_WRITE = 2_800
-
-# PUSH(value) + PUSH(key) around SSTORE. Both forks price these two PUSHes at
-# VERY_LOW=3 each on the branch pinned by this test.
-SSTORE_STACK_SETUP = 6
-
-# Exactly enough for the minimal cold Osaka existing-slot overwrite.
-FIXED_CHILD_GAS = 5_006
+def _uint_constant(path: str, name: str) -> int:
+    """Read a direct ``Uint(...)`` gas constant from a fork gas module."""
+    with open(path, encoding="utf-8") as source_file:
+        for line in source_file:
+            stripped = line.strip()
+            if stripped.startswith(f"{name}:") and "Uint(" in stripped:
+                raw_value = stripped.rsplit("Uint(", 1)[1].split(")", 1)[0]
+                return int(raw_value)
+    raise AssertionError(f"direct Uint constant not found: {path}:{name}")
 
 
-class Outcome(Enum):
-    """Bounded result for the fixed-gas child execution."""
+def _amsterdam_access_list_formulas_survive() -> None:
+    """Pin the access-list prepayment formulas used by the proof."""
+    with open(AMSTERDAM_GAS_PATH, encoding="utf-8") as source_file:
+        source = source_file.read()
 
-    PASS = "PASS"
-    FAIL = "FAIL"
-
-
-def _run_fixed_child(
-    *, access_cost: int, write_cost: int
-) -> tuple[Outcome, int]:
-    """Evaluate the minimal SSTORE path against the immutable child budget."""
-    required = SSTORE_STACK_SETUP + access_cost + write_cost
-    outcome = Outcome.PASS if required <= FIXED_CHILD_GAS else Outcome.FAIL
-    return outcome, required
+    assert "TX_ACCESS_LIST_ADDRESS: Final[ExecutionGas] = (" in source
+    assert "COLD_ACCOUNT_ACCESS - WARM_ACCESS" in source
+    assert "TX_ACCESS_LIST_STORAGE_KEY: Final[ExecutionGas] = (" in source
+    assert "COLD_STORAGE_ACCESS - WARM_ACCESS" in source
 
 
 def test_osaka_pass_amsterdam_fail_prepaid_pass() -> None:
-    """Pin the liveness flip and proposed rescue under one fixed budget."""
-    osaka_write_component = int(osaka_gas.GasCosts.COLD_STORAGE_WRITE) - int(
-        osaka_gas.GasCosts.COLD_STORAGE_ACCESS
+    """Prove one immutable child budget flips PASS -> FAIL -> PASS."""
+    osaka_warm = _uint_constant(OSAKA_GAS_PATH, "WARM_ACCESS")
+    osaka_cold_storage = _uint_constant(
+        OSAKA_GAS_PATH, "COLD_STORAGE_ACCESS"
     )
+    osaka_cold_write = _uint_constant(OSAKA_GAS_PATH, "COLD_STORAGE_WRITE")
+    osaka_push = _uint_constant(OSAKA_GAS_PATH, "VERY_LOW")
 
-    osaka, osaka_required = _run_fixed_child(
-        access_cost=int(osaka_gas.GasCosts.COLD_STORAGE_ACCESS),
-        write_cost=osaka_write_component,
+    amsterdam_warm = _uint_constant(AMSTERDAM_GAS_PATH, "WARM_ACCESS")
+    amsterdam_cold_storage = _uint_constant(
+        AMSTERDAM_GAS_PATH, "COLD_STORAGE_ACCESS"
     )
-    amsterdam, amsterdam_required = _run_fixed_child(
-        access_cost=int(amsterdam_gas.GasCosts.COLD_STORAGE_ACCESS),
-        write_cost=int(amsterdam_gas.GasCosts.STORAGE_WRITE),
-    )
-    prepaid, prepaid_required = _run_fixed_child(
-        access_cost=int(amsterdam_gas.GasCosts.WARM_ACCESS),
-        write_cost=LEGACY_STORAGE_WRITE,
-    )
+    amsterdam_write = _uint_constant(AMSTERDAM_GAS_PATH, "STORAGE_WRITE")
+    amsterdam_push = _uint_constant(AMSTERDAM_GAS_PATH, "VERY_LOW")
 
-    assert osaka_write_component == 2_900
+    legacy_write = osaka_cold_write - osaka_cold_storage - osaka_warm
+    fixed_child_gas = osaka_cold_write + 2 * osaka_push
+
+    osaka_required = osaka_cold_write + 2 * osaka_push
+    amsterdam_required = (
+        amsterdam_cold_storage + amsterdam_write + 2 * amsterdam_push
+    )
+    prepaid_required = amsterdam_warm + legacy_write + 2 * amsterdam_push
+
+    assert legacy_write == 2_800
+    assert fixed_child_gas == 5_006
     assert osaka_required == 5_006
     assert amsterdam_required == 12_106
     assert prepaid_required == 2_906
-    assert (osaka, amsterdam, prepaid) == (
-        Outcome.PASS,
-        Outcome.FAIL,
-        Outcome.PASS,
-    )
+
+    assert osaka_required <= fixed_child_gas
+    assert amsterdam_required > fixed_child_gas
+    assert prepaid_required <= fixed_child_gas
 
 
 def test_prepayment_preserves_glamsterdam_execution_resource_charge() -> None:
-    """Move repricing out of the child without discounting the work."""
-    write_repricing_delta = (
-        int(amsterdam_gas.GasCosts.STORAGE_WRITE) - LEGACY_STORAGE_WRITE
-    )
+    """Prove repricing relocation preserves the full Amsterdam core charge."""
+    _amsterdam_access_list_formulas_survive()
 
-    # Ordinary Amsterdam path: the child first touches a cold account and a
-    # cold existing storage slot, then performs the first non-zero overwrite.
-    baseline_call_access = int(amsterdam_gas.GasCosts.COLD_ACCOUNT_ACCESS)
-    baseline_storage = int(amsterdam_gas.GasCosts.COLD_STORAGE_ACCESS) + int(
-        amsterdam_gas.GasCosts.STORAGE_WRITE
+    osaka_warm = _uint_constant(OSAKA_GAS_PATH, "WARM_ACCESS")
+    osaka_cold_storage = _uint_constant(
+        OSAKA_GAS_PATH, "COLD_STORAGE_ACCESS"
     )
+    osaka_cold_write = _uint_constant(OSAKA_GAS_PATH, "COLD_STORAGE_WRITE")
+
+    amsterdam_warm = _uint_constant(AMSTERDAM_GAS_PATH, "WARM_ACCESS")
+    amsterdam_cold_account = _uint_constant(
+        AMSTERDAM_GAS_PATH, "COLD_ACCOUNT_ACCESS"
+    )
+    amsterdam_cold_storage = _uint_constant(
+        AMSTERDAM_GAS_PATH, "COLD_STORAGE_ACCESS"
+    )
+    amsterdam_write = _uint_constant(AMSTERDAM_GAS_PATH, "STORAGE_WRITE")
+
+    legacy_write = osaka_cold_write - osaka_cold_storage - osaka_warm
+    write_repricing_delta = amsterdam_write - legacy_write
+    access_list_address = amsterdam_cold_account - amsterdam_warm
+    access_list_storage_key = amsterdam_cold_storage - amsterdam_warm
+
+    baseline_call_access = amsterdam_cold_account
+    baseline_storage = amsterdam_cold_storage + amsterdam_write
     baseline_core_charge = baseline_call_access + baseline_storage
 
-    # Proposed accounting split:
-    # - EIP-2930-style prepayment makes account and slot accesses warm;
-    # - the 7_200 write-repricing delta is paid outside the immutable child;
-    # - the child pays only warm access + the 2_800 historical write component.
-    prepaid_call_access = int(
-        amsterdam_gas.GasCosts.TX_ACCESS_LIST_ADDRESS
-    ) + int(amsterdam_gas.GasCosts.WARM_ACCESS)
+    prepaid_call_access = access_list_address + amsterdam_warm
     prepaid_storage = (
-        int(amsterdam_gas.GasCosts.TX_ACCESS_LIST_STORAGE_KEY)
-        + int(amsterdam_gas.GasCosts.WARM_ACCESS)
+        access_list_storage_key
+        + amsterdam_warm
         + write_repricing_delta
-        + LEGACY_STORAGE_WRITE
+        + legacy_write
     )
     prepaid_core_charge = prepaid_call_access + prepaid_storage
 
     assert write_repricing_delta == 7_200
-    assert baseline_call_access == 3_000
-    assert prepaid_call_access == baseline_call_access
-    assert baseline_storage == 12_100
-    assert prepaid_storage == baseline_storage
-    assert prepaid_core_charge == baseline_core_charge == 15_100
+    assert baseline_call_access == prepaid_call_access == 3_000
+    assert baseline_storage == prepaid_storage == 12_100
+    assert baseline_core_charge == prepaid_core_charge == 15_100
 
 
 def test_prepayment_is_not_a_subsidy() -> None:
-    """Prove lower local cost does not make global work cheaper."""
-    local_prepaid_sstore = (
-        int(amsterdam_gas.GasCosts.WARM_ACCESS) + LEGACY_STORAGE_WRITE
+    """Prove the rescued local frame does not make global work cheaper."""
+    osaka_warm = _uint_constant(OSAKA_GAS_PATH, "WARM_ACCESS")
+    osaka_cold_storage = _uint_constant(
+        OSAKA_GAS_PATH, "COLD_STORAGE_ACCESS"
     )
+    osaka_cold_write = _uint_constant(OSAKA_GAS_PATH, "COLD_STORAGE_WRITE")
+
+    amsterdam_warm = _uint_constant(AMSTERDAM_GAS_PATH, "WARM_ACCESS")
+    amsterdam_cold_storage = _uint_constant(
+        AMSTERDAM_GAS_PATH, "COLD_STORAGE_ACCESS"
+    )
+    amsterdam_write = _uint_constant(AMSTERDAM_GAS_PATH, "STORAGE_WRITE")
+
+    legacy_write = osaka_cold_write - osaka_cold_storage - osaka_warm
+    write_repricing_delta = amsterdam_write - legacy_write
+    access_list_storage_key = amsterdam_cold_storage - amsterdam_warm
+
+    local_prepaid_sstore = amsterdam_warm + legacy_write
     globally_paid_sstore = (
-        int(amsterdam_gas.GasCosts.TX_ACCESS_LIST_STORAGE_KEY)
+        access_list_storage_key
         + local_prepaid_sstore
-        + int(amsterdam_gas.GasCosts.STORAGE_WRITE)
-        - LEGACY_STORAGE_WRITE
+        + write_repricing_delta
     )
 
     assert local_prepaid_sstore == 2_900
-    assert globally_paid_sstore == (
-        int(amsterdam_gas.GasCosts.COLD_STORAGE_ACCESS)
-        + int(amsterdam_gas.GasCosts.STORAGE_WRITE)
-    )
-    assert local_prepaid_sstore < FIXED_CHILD_GAS
+    assert globally_paid_sstore == amsterdam_cold_storage + amsterdam_write
