@@ -1,16 +1,25 @@
 """Tests that EIP-8198 duration changes are schedule-driven."""
 
 import inspect
+from dataclasses import replace
 
-from ethereum_types.numeric import U64, Uint
+import pytest
+from ethereum_rlp import rlp
+from ethereum_types.bytes import Bytes, Bytes8, Bytes32
+from ethereum_types.numeric import U64, U256, Uint
 
+from ethereum.crypto.hash import Hash32, keccak256
+from ethereum.exceptions import InvalidBlock
 from ethereum.forks.amsterdam import fork as amsterdam_fork
+from ethereum.forks.amsterdam.blocks import Header
 from ethereum.forks.amsterdam.fork import (
+    EMPTY_OMMER_HASH,
     calculate_base_fee_per_gas,
     get_max_blob_gas_per_block,
+    validate_header,
 )
+from ethereum.forks.amsterdam.fork_types import Bloom
 from ethereum.forks.amsterdam.slot_timing import (
-    BASE_SLOT_DURATION_MS,
     BLOB_GAS_PER_BLOB,
     BlobScheduleParameters,
     SlotDurationEntry,
@@ -20,8 +29,8 @@ from ethereum.forks.amsterdam.slot_timing import (
     get_transition_durations,
     scale_blob_schedule,
     scale_transition_limit,
-    scale_wall_clock_response,
 )
+from ethereum.state import Address, Root
 
 HEGOTA_EPOCH = U64(10)
 FUTURE_TEST_EPOCH = U64(20)
@@ -29,6 +38,45 @@ SCHEDULE_12_10_8 = (
     SlotDurationEntry(HEGOTA_EPOCH, Uint(10000)),
     SlotDurationEntry(FUTURE_TEST_EPOCH, Uint(8000)),
 )
+ZERO_ROOT = Root(b"\x00" * 32)
+ZERO_HASH = Hash32(b"\x00" * 32)
+
+
+def _header(
+    *,
+    slot_number: U64,
+    number: Uint,
+    gas_limit: Uint,
+    gas_used: Uint,
+    base_fee_per_gas: Uint,
+    timestamp: U256,
+) -> Header:
+    """Build a minimal Amsterdam header for duration-transition tests."""
+    return Header(
+        parent_hash=ZERO_HASH,
+        ommers_hash=EMPTY_OMMER_HASH,
+        coinbase=Address(b"\x00" * 20),
+        state_root=ZERO_ROOT,
+        transactions_root=ZERO_ROOT,
+        receipt_root=ZERO_ROOT,
+        bloom=Bloom(b"\x00" * 256),
+        difficulty=Uint(0),
+        number=number,
+        gas_limit=gas_limit,
+        gas_used=gas_used,
+        timestamp=timestamp,
+        extra_data=Bytes(b""),
+        prev_randao=Bytes32(b"\x00" * 32),
+        nonce=Bytes8(b"\x00" * 8),
+        base_fee_per_gas=base_fee_per_gas,
+        withdrawals_root=ZERO_ROOT,
+        blob_gas_used=U64(0),
+        excess_blob_gas=U64(0),
+        parent_beacon_block_root=ZERO_ROOT,
+        requests_hash=ZERO_HASH,
+        block_access_list_hash=ZERO_HASH,
+        slot_number=slot_number,
+    )
 
 
 def test_repeated_duration_changes_are_schedule_only() -> None:
@@ -38,10 +86,18 @@ def test_repeated_duration_changes_are_schedule_only() -> None:
     last_10s_slot = U64(FUTURE_TEST_EPOCH * U64(32) - U64(1))
     first_8s_slot = U64(FUTURE_TEST_EPOCH * U64(32))
 
-    assert get_slot_duration_ms(last_12s_slot, SCHEDULE_12_10_8) == Uint(12000)
-    assert get_slot_duration_ms(first_10s_slot, SCHEDULE_12_10_8) == Uint(10000)
-    assert get_slot_duration_ms(last_10s_slot, SCHEDULE_12_10_8) == Uint(10000)
-    assert get_slot_duration_ms(first_8s_slot, SCHEDULE_12_10_8) == Uint(8000)
+    assert get_slot_duration_ms(
+        last_12s_slot, SCHEDULE_12_10_8
+    ) == Uint(12000)
+    assert get_slot_duration_ms(
+        first_10s_slot, SCHEDULE_12_10_8
+    ) == Uint(10000)
+    assert get_slot_duration_ms(
+        last_10s_slot, SCHEDULE_12_10_8
+    ) == Uint(10000)
+    assert get_slot_duration_ms(
+        first_8s_slot, SCHEDULE_12_10_8
+    ) == Uint(8000)
 
 
 def test_gas_limit_scales_once_at_each_duration_boundary() -> None:
@@ -57,8 +113,6 @@ def test_gas_limit_scales_once_at_each_duration_boundary() -> None:
     assert (old_ms, new_ms) == (Uint(12000), Uint(10000))
     assert gas_limit_10s == Uint(60_000_000)
 
-    # The current payload is already seven slots into the 8-second era.
-    # Comparing execution-payload slots still detects the one-time change.
     old_ms, new_ms = get_transition_durations(
         last_10s_payload_slot,
         U64(first_8s_slot + U64(7)),
@@ -68,8 +122,6 @@ def test_gas_limit_scales_once_at_each_duration_boundary() -> None:
     assert (old_ms, new_ms) == (Uint(10000), Uint(8000))
     assert gas_limit_8s == Uint(48_000_000)
 
-    # Once both execution payloads are in the 8-second era, no second scale
-    # is applied even when there were missed beacon slots between payloads.
     old_ms, new_ms = get_transition_durations(
         U64(first_8s_slot + U64(7)),
         U64(first_8s_slot + U64(19)),
@@ -78,21 +130,56 @@ def test_gas_limit_scales_once_at_each_duration_boundary() -> None:
     assert scale_transition_limit(gas_limit_8s, old_ms, new_ms) == gas_limit_8s
 
 
-def test_base_fee_response_uses_current_over_base_ratio() -> None:
-    """Ongoing response/sec remains constant across more than one era."""
-    unscaled_delta = Uint(1200)
+def test_validate_header_handles_missed_payloads_at_second_boundary() -> None:
+    """
+    Validate the production header path across a synthetic 10 -> 8 change.
 
-    response_12s = scale_wall_clock_response(
-        unscaled_delta, BASE_SLOT_DURATION_MS
+    The parent execution payload is seven slots before the boundary and the
+    child payload is seven slots after it. The duration transition must still
+    scale the gas limit exactly once, even though no payload exists at the
+    scheduled boundary slot.
+    """
+    first_8s_slot = U64(FUTURE_TEST_EPOCH * U64(32))
+    parent = _header(
+        slot_number=U64(first_8s_slot - U64(7)),
+        number=Uint(100),
+        gas_limit=Uint(60_000_000),
+        gas_used=Uint(30_000_000),
+        base_fee_per_gas=Uint(960),
+        timestamp=U256(1_000_000),
     )
-    response_10s = scale_wall_clock_response(unscaled_delta, Uint(10000))
-    response_8s = scale_wall_clock_response(unscaled_delta, Uint(8000))
+    transition = _header(
+        slot_number=U64(first_8s_slot + U64(7)),
+        number=Uint(101),
+        gas_limit=Uint(48_000_000),
+        gas_used=Uint(24_000_000),
+        base_fee_per_gas=Uint(960),
+        timestamp=U256(1_000_008),
+    )
+    transition = replace(
+        transition,
+        parent_hash=keccak256(rlp.encode(parent)),
+    )
 
-    assert response_12s == Uint(1200)
-    assert response_10s == Uint(1000)
-    assert response_8s == Uint(800)
-    assert response_12s * Uint(10000) == response_10s * Uint(12000)
-    assert response_10s * Uint(8000) == response_8s * Uint(10000)
+    validate_header(parent, transition, SCHEDULE_12_10_8)
+
+    unscaled = replace(transition, gas_limit=Uint(60_000_000))
+    with pytest.raises(InvalidBlock):
+        validate_header(parent, unscaled, SCHEDULE_12_10_8)
+
+    ordinary_8s = _header(
+        slot_number=U64(first_8s_slot + U64(19)),
+        number=Uint(102),
+        gas_limit=Uint(48_000_000),
+        gas_used=Uint(24_000_000),
+        base_fee_per_gas=Uint(960),
+        timestamp=U256(1_000_016),
+    )
+    ordinary_8s = replace(
+        ordinary_8s,
+        parent_hash=keccak256(rlp.encode(transition)),
+    )
+    validate_header(transition, ordinary_8s, SCHEDULE_12_10_8)
 
 
 def test_production_base_fee_path_supports_second_era() -> None:
