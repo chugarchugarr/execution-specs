@@ -24,6 +24,11 @@ from execution_testing import (
     Transaction,
 )
 
+from .spec import ref_spec_8038
+
+REFERENCE_SPEC_GIT_PATH = ref_spec_8038.git_path
+REFERENCE_SPEC_VERSION = ref_spec_8038.version
+
 BEFORE_TS = 14_999
 AFTER_TS = 15_000
 
