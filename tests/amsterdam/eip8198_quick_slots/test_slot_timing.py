@@ -86,18 +86,12 @@ def test_repeated_duration_changes_are_schedule_only() -> None:
     last_10s_slot = U64(FUTURE_TEST_EPOCH * U64(32) - U64(1))
     first_8s_slot = U64(FUTURE_TEST_EPOCH * U64(32))
 
-    assert get_slot_duration_ms(
-        last_12s_slot, SCHEDULE_12_10_8
-    ) == Uint(12000)
-    assert get_slot_duration_ms(
-        first_10s_slot, SCHEDULE_12_10_8
-    ) == Uint(10000)
-    assert get_slot_duration_ms(
-        last_10s_slot, SCHEDULE_12_10_8
-    ) == Uint(10000)
-    assert get_slot_duration_ms(
-        first_8s_slot, SCHEDULE_12_10_8
-    ) == Uint(8000)
+    assert get_slot_duration_ms(last_12s_slot, SCHEDULE_12_10_8) == Uint(12000)
+    assert get_slot_duration_ms(first_10s_slot, SCHEDULE_12_10_8) == Uint(
+        10000
+    )
+    assert get_slot_duration_ms(last_10s_slot, SCHEDULE_12_10_8) == Uint(10000)
+    assert get_slot_duration_ms(first_8s_slot, SCHEDULE_12_10_8) == Uint(8000)
 
 
 def test_gas_limit_scales_once_at_each_duration_boundary() -> None:
