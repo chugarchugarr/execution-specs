@@ -19,8 +19,9 @@ This marker encoding is a proof vehicle, not a proposed final wire format.
 """
 
 import pytest
-from ethereum.crypto.hash import keccak256
 from ethereum_types.bytes import Bytes32
+
+from ethereum.crypto.hash import keccak256
 from execution_testing import (
     AccessList,
     Account,
@@ -28,6 +29,7 @@ from execution_testing import (
     Alloc,
     Block,
     BlockchainTestFiller,
+    Bytecode,
     Fork,
     Op,
     Transaction,
@@ -47,7 +49,7 @@ WRITE_PREPAYMENT_MARKER_COUNT = 3
 pytestmark = pytest.mark.valid_at_transition_to("Amsterdam")
 
 
-def _warm_existing_slot_write(fork: Fork):
+def _warm_existing_slot_write(fork: Fork) -> Bytecode:
     """Return one warm nonzero-to-nonzero SSTORE with explicit metadata."""
     return Op.SSTORE.with_metadata(
         key_warm=True,
@@ -176,7 +178,10 @@ def test_fixed_gas_sstore_liveness_and_write_prepayment(
                     to=parent_voucher,
                     sender=pre.fund_eoa(),
                     access_list=[
-                        AccessList(address=child_voucher, storage_keys=voucher_keys)
+                        AccessList(
+                            address=child_voucher,
+                            storage_keys=voucher_keys,
+                        )
                     ],
                 )
             ],
@@ -214,7 +219,10 @@ def test_partial_write_prepayment_does_not_discount(
                     to=parent,
                     sender=pre.fund_eoa(),
                     access_list=[
-                        AccessList(address=child, storage_keys=[0, *markers[:2]])
+                        AccessList(
+                            address=child,
+                            storage_keys=[0, *markers[:2]],
+                        )
                     ],
                 )
             ],
@@ -280,7 +288,9 @@ def test_ordinary_amsterdam_sstore_remains_unchanged(
     pre: Alloc,
     fork: Fork,
 ) -> None:
-    """Without marker keys, an adequately funded Amsterdam write still works."""
+    """
+    Verify an adequately funded Amsterdam write still works without markers.
+    """
     _, cost_after, _, _ = _fixed_gas_window(fork)
 
     child = pre.deploy_contract(code=Op.SSTORE(0, 2), storage={0: 1})
