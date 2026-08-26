@@ -1,4 +1,5 @@
-"""Slot-duration schedule helpers for EIP-8198.
+"""
+Slot-duration schedule helpers for EIP-8198.
 
 The execution layer needs two distinct duration ratios:
 
@@ -75,7 +76,9 @@ def validate_slot_duration_schedule(schedule: SlotDurationSchedule) -> None:
         if entry.duration_ms == 0 or entry.duration_ms % Uint(1000) != 0:
             raise ValueError("slot duration must be a positive whole second")
         if previous_epoch is not None and entry.epoch <= previous_epoch:
-            raise ValueError("slot duration epochs must be strictly increasing")
+            raise ValueError(
+                "slot duration epochs must be strictly increasing"
+            )
         previous_epoch = entry.epoch
 
 
@@ -105,7 +108,8 @@ def get_transition_durations(
     schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
     base_duration_ms: Uint = BASE_SLOT_DURATION_MS,
 ) -> Tuple[Uint, Uint]:
-    """Return parent/current execution-payload durations.
+    """
+    Return parent/current execution-payload durations.
 
     ``None`` represents the legacy parent at the first EIP-8198 execution
     payload. Future transitions use the parent execution payload's actual
@@ -134,23 +138,13 @@ def scale_transition_limit(
     return Uint(value * new_duration_ms // old_duration_ms)
 
 
-def scale_wall_clock_response(
-    value: Uint,
-    current_duration_ms: Uint,
-    base_duration_ms: Uint = BASE_SLOT_DURATION_MS,
-) -> Uint:
-    """Scale an ongoing per-block response to preserve response per second."""
-    if current_duration_ms == 0 or base_duration_ms == 0:
-        raise ValueError("slot durations must be positive")
-    return Uint(value * current_duration_ms // base_duration_ms)
-
-
 def scale_blob_schedule(
     previous: BlobScheduleParameters,
     old_duration_ms: Uint,
     new_duration_ms: Uint,
 ) -> BlobScheduleParameters:
-    """Derive blob parameters for the next duration era.
+    """
+    Derive blob parameters for the next duration era.
 
     Maximum blob count truncates down, target blob count rounds to nearest,
     and the update fraction preserves maximum sustained blob-fee response
@@ -161,16 +155,21 @@ def scale_blob_schedule(
     if previous.maximum <= previous.target:
         raise ValueError("blob maximum must exceed blob target")
 
-    maximum = U64(previous.maximum * new_duration_ms // old_duration_ms)
+    maximum = U64(
+        Uint(previous.maximum) * new_duration_ms // old_duration_ms
+    )
     target = U64(
-        (previous.target * new_duration_ms + old_duration_ms // Uint(2))
+        (
+            Uint(previous.target) * new_duration_ms
+            + old_duration_ms // Uint(2)
+        )
         // old_duration_ms
     )
     if maximum <= target:
         raise ValueError("scaled blob maximum must exceed scaled target")
 
-    old_headroom = previous.maximum - previous.target
-    new_headroom = maximum - target
+    old_headroom = Uint(previous.maximum - previous.target)
+    new_headroom = Uint(maximum - target)
     update_fraction = Uint(
         previous.update_fraction
         * new_headroom
