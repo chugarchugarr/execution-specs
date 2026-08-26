@@ -16,5 +16,10 @@ jobs:
           python-version: "3.14"
       - name: Fill targeted Osaka-to-Amsterdam proof
         run: >
-          just fill --from Osaka --until Amsterdam
-          -k write_prepayment_prototype
+          uv run fill
+          --skip-index
+          --clean
+          --from Osaka
+          --until Amsterdam
+          --output=.just/write-prepayment/fixtures
+          tests/amsterdam/eip8038_state_access_gas_cost_increase/test_write_prepayment_prototype.py
