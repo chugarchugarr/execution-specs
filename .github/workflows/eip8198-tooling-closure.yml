@@ -19,13 +19,13 @@ jobs:
         shell: bash
         run: |
           python .github/eip8198_tooling_closure.py
-          uv run ruff check --fix \
+          uv run ruff format \
             src/ethereum_spec_tools/forks.py \
             src/ethereum_spec_tools/new_fork/builder.py \
             tests/evm_tools/test_fork_cache.py \
             tests/evm_tools/test_new_fork.py \
             src/ethereum/forks/amsterdam/slot_timing.py
-          uv run ruff format \
+          uv run ruff check --fix \
             src/ethereum_spec_tools/forks.py \
             src/ethereum_spec_tools/new_fork/builder.py \
             tests/evm_tools/test_fork_cache.py \
