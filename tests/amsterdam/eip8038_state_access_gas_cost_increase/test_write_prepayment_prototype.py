@@ -36,9 +36,7 @@ def _amsterdam_access_list_formulas_survive() -> None:
 def test_osaka_pass_amsterdam_fail_prepaid_pass() -> None:
     """Prove one immutable child budget flips PASS -> FAIL -> PASS."""
     osaka_warm = _uint_constant(OSAKA_GAS_PATH, "WARM_ACCESS")
-    osaka_cold_storage = _uint_constant(
-        OSAKA_GAS_PATH, "COLD_STORAGE_ACCESS"
-    )
+    osaka_cold_storage = _uint_constant(OSAKA_GAS_PATH, "COLD_STORAGE_ACCESS")
     osaka_cold_write = _uint_constant(OSAKA_GAS_PATH, "COLD_STORAGE_WRITE")
     osaka_push = _uint_constant(OSAKA_GAS_PATH, "VERY_LOW")
 
@@ -74,9 +72,7 @@ def test_prepayment_preserves_glamsterdam_execution_resource_charge() -> None:
     _amsterdam_access_list_formulas_survive()
 
     osaka_warm = _uint_constant(OSAKA_GAS_PATH, "WARM_ACCESS")
-    osaka_cold_storage = _uint_constant(
-        OSAKA_GAS_PATH, "COLD_STORAGE_ACCESS"
-    )
+    osaka_cold_storage = _uint_constant(OSAKA_GAS_PATH, "COLD_STORAGE_ACCESS")
     osaka_cold_write = _uint_constant(OSAKA_GAS_PATH, "COLD_STORAGE_WRITE")
 
     amsterdam_warm = _uint_constant(AMSTERDAM_GAS_PATH, "WARM_ACCESS")
@@ -115,9 +111,7 @@ def test_prepayment_preserves_glamsterdam_execution_resource_charge() -> None:
 def test_prepayment_is_not_a_subsidy() -> None:
     """Prove the rescued local frame does not make global work cheaper."""
     osaka_warm = _uint_constant(OSAKA_GAS_PATH, "WARM_ACCESS")
-    osaka_cold_storage = _uint_constant(
-        OSAKA_GAS_PATH, "COLD_STORAGE_ACCESS"
-    )
+    osaka_cold_storage = _uint_constant(OSAKA_GAS_PATH, "COLD_STORAGE_ACCESS")
     osaka_cold_write = _uint_constant(OSAKA_GAS_PATH, "COLD_STORAGE_WRITE")
 
     amsterdam_warm = _uint_constant(AMSTERDAM_GAS_PATH, "WARM_ACCESS")
@@ -132,9 +126,7 @@ def test_prepayment_is_not_a_subsidy() -> None:
 
     local_prepaid_sstore = amsterdam_warm + legacy_write
     globally_paid_sstore = (
-        access_list_storage_key
-        + local_prepaid_sstore
-        + write_repricing_delta
+        access_list_storage_key + local_prepaid_sstore + write_repricing_delta
     )
 
     assert local_prepaid_sstore == 2_900
