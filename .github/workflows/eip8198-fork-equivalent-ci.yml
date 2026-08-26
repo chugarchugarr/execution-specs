@@ -1,0 +1,169 @@
+name: Fork-equivalent upstream CI (EIP-8198 proof)
+
+on:
+  push:
+    branches:
+      - ci/eip8198-fork-equivalent-proof
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TARGET_SHA: 396ac9db143bc1a8d3c4e8d90b5d1c2941dd970c
+
+jobs:
+  provenance:
+    name: Verify exact PR #4 head
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TARGET_SHA }}
+      - name: Verify tested commit
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+
+  fill:
+    name: equivalent fill (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    needs: provenance
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: pre-shanghai
+            from_fork: Frontier
+            until_fork: Paris
+          - label: shanghai-cancun
+            from_fork: Shanghai
+            until_fork: Cancun
+          - label: prague
+            from_fork: Prague
+            until_fork: Prague
+          - label: osaka
+            from_fork: Osaka
+            until_fork: Osaka
+          - label: amsterdam
+            from_fork: Amsterdam
+            until_fork: Amsterdam
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TARGET_SHA }}
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.14"
+      - name: Run upstream-equivalent fill (${{ matrix.label }})
+        run: >
+          just fill --from ${{ matrix.from_fork }} --until ${{ matrix.until_fork }}
+          -m "not slow and not derived_test"
+        env:
+          PYTEST_XDIST_AUTO_NUM_WORKERS: "2"
+
+  fill-pypy:
+    name: equivalent fill-pypy
+    runs-on: ubuntu-latest
+    needs: provenance
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TARGET_SHA }}
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "pypy3.11"
+      - uses: ./.github/actions/setup-env-pypy
+      - name: Run upstream-equivalent fill-pypy
+        run: just fill-pypy
+        env:
+          PYPY_GC_MAX: "2G"
+          PYPY_GC_MIN: "1G"
+
+  json-loader:
+    name: equivalent json-loader
+    runs-on: ubuntu-latest
+    needs: provenance
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TARGET_SHA }}
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.14"
+      - name: Run upstream-equivalent json-loader
+        run: just json-loader
+        env:
+          PYTEST_XDIST_AUTO_NUM_WORKERS: "2"
+
+  test-tests:
+    name: equivalent test-tests
+    runs-on: ubuntu-latest
+    needs: provenance
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TARGET_SHA }}
+      - uses: ./.github/actions/setup-uv
+      - uses: ./.github/actions/build-evmone
+      - name: Run upstream-equivalent test-tests
+        run: just test-tests
+        env:
+          PYTEST_XDIST_AUTO_NUM_WORKERS: "2"
+
+  test-tests-pypy:
+    name: equivalent test-tests-pypy
+    runs-on: ubuntu-latest
+    needs: provenance
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TARGET_SHA }}
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "pypy3.11"
+      - uses: ./.github/actions/setup-env-pypy
+      - uses: ./.github/actions/build-evmone
+      - name: Run upstream-equivalent test-tests-pypy
+        run: just test-tests-pypy
+        env:
+          PYPY_GC_MAX: "2G"
+          PYPY_GC_MIN: "1G"
+
+  equivalent-green:
+    name: Fork-equivalent validation green
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - provenance
+      - fill
+      - fill-pypy
+      - json-loader
+      - test-tests
+      - test-tests-pypy
+    steps:
+      - name: Require all equivalent jobs to pass
+        env:
+          PROVENANCE: ${{ needs.provenance.result }}
+          FILL: ${{ needs.fill.result }}
+          FILL_PYPY: ${{ needs.fill-pypy.result }}
+          JSON_LOADER: ${{ needs.json-loader.result }}
+          TEST_TESTS: ${{ needs.test-tests.result }}
+          TEST_TESTS_PYPY: ${{ needs.test-tests-pypy.result }}
+        run: |
+          printf '%s\n' \
+            "provenance=$PROVENANCE" \
+            "fill=$FILL" \
+            "fill-pypy=$FILL_PYPY" \
+            "json-loader=$JSON_LOADER" \
+            "test-tests=$TEST_TESTS" \
+            "test-tests-pypy=$TEST_TESTS_PYPY"
+          test "$PROVENANCE" = success
+          test "$FILL" = success
+          test "$FILL_PYPY" = success
+          test "$JSON_LOADER" = success
+          test "$TEST_TESTS" = success
+          test "$TEST_TESTS_PYPY" = success
