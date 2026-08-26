@@ -14,8 +14,6 @@ Implementations of the EVM storage related instructions.
 from ethereum_types.bytes import Bytes32
 from ethereum_types.numeric import Uint
 
-from ethereum.crypto.hash import keccak256
-
 from ...fork_types import ExecutionGas, StateGas
 from ...state_tracker import (
     get_storage,
@@ -24,6 +22,7 @@ from ...state_tracker import (
     set_storage,
     set_transient_storage,
 )
+from ...write_prepayment import STORAGE_WRITE_REPRICING_DELTA
 from .. import Evm
 from ..exceptions import WriteInStaticContext
 from ..gas import (
@@ -37,38 +36,15 @@ from ..gas import (
 from ..stack import pop, push
 
 
-# Experimental, wire-compatible proof encoding only. Three domain-separated
-# access-list storage keys prepay 3 * TX_ACCESS_LIST_STORAGE_KEY outside the
-# child frame. The matching SSTORE pays the remainder of STORAGE_WRITE inside
-# the frame. A final EIP should use an explicit transaction representation.
-_WRITE_PREPAYMENT_DOMAIN = b"glamsterdam-write-prepayment-v1"
-_WRITE_PREPAYMENT_MARKER_COUNT = 3
-
-
-def _write_prepayment_markers(evm: Evm, key: Bytes32) -> tuple[Bytes32, ...]:
-    """Return the access-list marker keys for one target storage slot."""
-    prefix = _WRITE_PREPAYMENT_DOMAIN + bytes(evm.current_target) + bytes(key)
-    return tuple(
-        keccak256(prefix + bytes([index]))
-        for index in range(_WRITE_PREPAYMENT_MARKER_COUNT)
-    )
-
-
 def _consume_write_prepayment(evm: Evm, key: Bytes32) -> bool:
-    """Consume one experimental prepayment if all marker keys are present."""
-    declared = evm.tx_env.access_list_storage_keys
-    if (evm.current_target, key) not in declared:
+    """Consume one transaction-boundary write prepayment."""
+    entry = (evm.current_target, key)
+    if entry not in evm.tx_env.write_prepaid_storage_keys:
         return False
 
-    markers = _write_prepayment_markers(evm, key)
-    marker_entries = tuple((evm.current_target, marker) for marker in markers)
-    if not all(entry in declared for entry in marker_entries):
-        return False
-
-    # The intrinsic access-list charges are paid once. Consume the markers
-    # transaction-wide so a reverted/failed child cannot reuse that prepayment.
-    for entry in marker_entries:
-        declared.remove(entry)
+    # Consumption is transaction-wide, so a reverted or OOG child cannot
+    # reuse one intrinsic prepayment in another frame.
+    evm.tx_env.write_prepaid_storage_keys.remove(entry)
     return True
 
 
@@ -159,11 +135,7 @@ def sstore(evm: Evm) -> None:
     # Write cost: charged on the first change to the slot this transaction.
     if original_value == current_value and current_value != new_value:
         if _consume_write_prepayment(evm, key):
-            prepaid = ExecutionGas(
-                GasCosts.TX_ACCESS_LIST_STORAGE_KEY
-                * Uint(_WRITE_PREPAYMENT_MARKER_COUNT)
-            )
-            gas_cost += GasCosts.STORAGE_WRITE - prepaid
+            gas_cost += GasCosts.STORAGE_WRITE - STORAGE_WRITE_REPRICING_DELTA
         else:
             gas_cost += GasCosts.STORAGE_WRITE
 
