@@ -1,18 +1,7 @@
-"""
-Ethereum Specification.
-
-.. contents:: Table of Contents
-    :backlinks: none
-    :local:
-
-Introduction
-------------
-
-Entry point for the Ethereum specification.
-"""
+"""Ethereum specification entry point for Amsterdam."""
 
 from dataclasses import dataclass
-from typing import Final, List, Optional, Tuple, final
+from typing import List, Optional, Tuple, final
 
 from ethereum_rlp import rlp
 from ethereum_types.bytes import Bytes
@@ -64,6 +53,18 @@ from .requests import (
     compute_requests_hash,
     parse_deposit_requests,
 )
+from .slot_timing import (
+    BASE_SLOT_DURATION_MS,
+    BLOB_BASE_COST,
+    BLOB_GAS_PER_BLOB,
+    SLOT_DURATION_SCHEDULE,
+    SlotDurationSchedule,
+    calculate_blob_gas_price_for_slot,
+    get_blob_schedule,
+    get_slot_duration_ms,
+    get_transition_durations,
+    scale_transition_limit,
+)
 from .state_tracker import (
     BlockState,
     TransactionState,
@@ -99,9 +100,6 @@ from .vm.gas import (
     GasCosts,
     StateGasCosts,
     allocate_execution_gas,
-    calculate_blob_gas_price,
-    calculate_data_fee,
-    calculate_excess_blob_gas,
     calculate_total_blob_gas,
     settle_transaction_gas,
 )
@@ -109,39 +107,13 @@ from .vm.interpreter import MessageCallOutput, process_message_call
 
 BASE_FEE_MAX_CHANGE_DENOMINATOR = Uint(8)
 ELASTICITY_MULTIPLIER = Uint(2)
-SLOT_DURATION_MS = Uint(10000)
-"""
-Duration of a consensus-layer slot from this fork onward, in milliseconds.
-
-Blocks arrive every 10 seconds instead of 12. Per-block rates (the base
-fee adjustment, the gas limit, the blob schedule) are rescaled by the
-exact ratio ``SLOT_DURATION_MS / PREVIOUS_SLOT_DURATION_MS`` so that
-their behavior per unit of wall-clock time is unchanged.
-"""
-PREVIOUS_SLOT_DURATION_MS = Uint(12000)
-"""
-Duration of a consensus-layer slot before this fork, in milliseconds.
-"""
 EMPTY_OMMER_HASH = keccak256(rlp.encode([]))
 SYSTEM_ADDRESS = hex_to_address("0xfffffffffffffffffffffffffffffffffffffffe")
 BEACON_ROOTS_ADDRESS = hex_to_address(
     "0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02"
 )
-"""
-Address of the beacon roots ring buffer contract. Its 8191-entry buffer
-holds one root per slot, so its wall-clock coverage shrinks from ~27.3
-hours to ~22.8 hours under 10-second slots. The buffer length is part of
-the deployed contract and is deliberately not changed by this fork.
-"""
 SYSTEM_TRANSACTION_GAS = Uint(30000000)
 SYSTEM_MAX_SSTORES_PER_CALL = Uint(16)
-"""
-Upper bound on the number of new storage slots a single system call is
-expected to write.
-"""
-MAX_BLOB_GAS_PER_BLOCK: Final[U64] = (
-    GasCosts.BLOB_SCHEDULE_MAX * GasCosts.PER_BLOB
-)
 VERSIONED_HASH_VERSION_KZG = b"\x01"
 GWEI_TO_WEI = U256(10**9)
 
@@ -160,12 +132,7 @@ BUILDER_EXIT_CONTRACT_ADDRESS = hex_to_address(
 HISTORY_STORAGE_ADDRESS = hex_to_address(
     "0x0000F90827F1C53a10cb7A02335B175320002935"
 )
-"""
-Address of the block hash history contract. Its 8191-entry window is
-denominated in blocks, so its wall-clock coverage shrinks from ~27.3
-hours to ~22.8 hours under 10-second slots. The window length is part of
-the deployed contract and is deliberately not changed by this fork.
-"""
+
 MAX_BLOCK_SIZE = 10_485_760
 SAFETY_MARGIN = 2_097_152
 MAX_RLP_BLOCK_SIZE = MAX_BLOCK_SIZE - SAFETY_MARGIN
@@ -176,26 +143,17 @@ BLOB_COUNT_LIMIT = 6
 @slotted_freezable
 @dataclass
 class ChainContext:
-    """
-    Chain context needed for block execution.
-    """
+    """Chain context needed for block execution."""
 
     chain_id: U64
-    """Identify the chain for transaction signature recovery."""
-
     block_hashes: List[Hash32]
-    """Recent ancestor hashes (up to 256) for the ``BLOCKHASH`` opcode."""
-
     parent_header: Header | PreviousHeader
-    """Parent header used for header validation and system contracts."""
 
 
 @final
 @dataclass
 class BlockChain:
-    """
-    History and current state of the block chain.
-    """
+    """History and current state of the block chain."""
 
     blocks: List[Block]
     state: State
@@ -203,105 +161,35 @@ class BlockChain:
 
 
 def apply_fork(old: BlockChain) -> BlockChain:
-    """
-    Transforms the state from the previous hard fork (`old`) into the block
-    chain object for this hard fork and returns it.
-
-    When forks need to implement an irregular state transition, this function
-    is used to handle the irregularity. See the :ref:`DAO Fork <dao-fork>` for
-    an example.
-
-    Parameters
-    ----------
-    old :
-        Previous block chain object.
-
-    Returns
-    -------
-    new : `BlockChain`
-        Upgraded block chain object for this hard fork.
-
-    """
+    """Return the chain after the Amsterdam fork transition."""
     return old
 
 
 def get_last_256_block_hashes(chain: BlockChain) -> List[Hash32]:
-    """
-    Obtain the list of hashes of the previous 256 blocks in order of
-    increasing block number.
-
-    This function will return less hashes for the first 256 blocks.
-
-    The ``BLOCKHASH`` opcode needs to access the latest hashes on the chain,
-    therefore this function retrieves them.
-
-    Parameters
-    ----------
-    chain :
-        History and current state.
-
-    Returns
-    -------
-    recent_block_hashes : `List[Hash32]`
-        Hashes of the recent 256 blocks in order of increasing block number.
-
-    """
+    """Return hashes of the most recent 256 blocks in increasing order."""
     recent_blocks = chain.blocks[-255:]
-    # TODO: This function has not been tested rigorously
     if len(recent_blocks) == 0:
         return []
 
     recent_block_hashes = []
-
     for block in recent_blocks:
-        prev_block_hash = block.header.parent_hash
-        recent_block_hashes.append(prev_block_hash)
+        recent_block_hashes.append(block.header.parent_hash)
 
-    # We are computing the hash only for the most recent block and not for
-    # the rest of the blocks as they have successors which have the hash of
-    # the current block as parent hash.
-    most_recent_block_hash = keccak256(rlp.encode(recent_blocks[-1].header))
-    recent_block_hashes.append(most_recent_block_hash)
-
+    recent_block_hashes.append(keccak256(rlp.encode(recent_blocks[-1].header)))
     return recent_block_hashes
 
 
 def state_transition(chain: BlockChain, block: Block) -> None:
-    """
-    Attempts to apply a block to an existing block chain.
-
-    All parts of the block's contents need to be verified before being added
-    to the chain. Blocks are verified by ensuring that the contents of the
-    block make logical sense with the contents of the parent block. The
-    information in the block's header must also match the corresponding
-    information in the block.
-
-    To implement Ethereum, in theory clients are only required to store the
-    most recent 255 blocks of the chain since as far as execution is
-    concerned, only those blocks are accessed. Practically, however, clients
-    should store more blocks to handle reorgs.
-
-    Parameters
-    ----------
-    chain :
-        History and current state.
-    block :
-        Block to apply to `chain`.
-
-    """
+    """Apply a block to the chain after validating and executing it."""
     chain_context = ChainContext(
         chain_id=chain.chain_id,
         block_hashes=get_last_256_block_hashes(chain),
         parent_header=chain.blocks[-1].header,
     )
-
     block_diff = execute_block(block, chain.state, chain_context)
-
     apply_changes_to_state(chain.state, block_diff)
     chain.blocks.append(block)
     if len(chain.blocks) > 255:
-        # Real clients have to store more blocks to deal with reorgs, but the
-        # protocol only requires the last 255
         chain.blocks = chain.blocks[-255:]
 
 
@@ -310,26 +198,7 @@ def execute_block(
     pre_state: State,
     chain_context: ChainContext,
 ) -> BlockDiff:
-    """
-    Execute a block and validate the resulting roots against the header.
-
-    This method is idempotent.
-
-    Parameters
-    ----------
-    block :
-        Block to validate and execute.
-    pre_state :
-        Pre-execution state provider.
-    chain_context :
-        Chain context that the block may need during execution.
-
-    Returns
-    -------
-    block_diff : `BlockDiff`
-        Account, storage, and code changes produced by block execution.
-
-    """
+    """Execute a block and validate the resulting roots against the header."""
     if len(rlp.encode(block)) > MAX_RLP_BLOCK_SIZE:
         raise InvalidBlock("Block rlp size exceeds MAX_RLP_BLOCK_SIZE")
 
@@ -340,7 +209,6 @@ def execute_block(
         raise InvalidBlock
 
     block_state = BlockState(pre_state=pre_state)
-
     block_env = vm.BlockEnvironment(
         chain_id=chain_context.chain_id,
         state=block_state,
@@ -399,47 +267,91 @@ def execute_block(
     return block_diff
 
 
+def get_max_blob_gas_per_block(
+    slot_number: U64,
+    slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+) -> U64:
+    """Return the current per-block blob capacity from the duration schedule."""
+    return BLOB_GAS_PER_BLOB * get_blob_schedule(
+        slot_number, slot_duration_schedule
+    ).maximum
+
+
+def calculate_excess_blob_gas_for_slot(
+    parent_header: Header | PreviousHeader,
+    current_slot_number: U64,
+    slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+) -> U64:
+    """Calculate excess blob gas with parameters for the current slot era."""
+    excess_blob_gas = U64(0)
+    blob_gas_used = U64(0)
+    base_fee_per_gas = Uint(0)
+
+    if isinstance(parent_header, Header):
+        excess_blob_gas = parent_header.excess_blob_gas
+        blob_gas_used = parent_header.blob_gas_used
+        base_fee_per_gas = parent_header.base_fee_per_gas
+
+    blob_schedule = get_blob_schedule(
+        current_slot_number, slot_duration_schedule
+    )
+    target_blob_gas_per_block = BLOB_GAS_PER_BLOB * blob_schedule.target
+    parent_blob_gas = excess_blob_gas + blob_gas_used
+    if parent_blob_gas < target_blob_gas_per_block:
+        return U64(0)
+
+    target_blob_gas_price = Uint(BLOB_GAS_PER_BLOB)
+    target_blob_gas_price *= calculate_blob_gas_price_for_slot(
+        excess_blob_gas,
+        current_slot_number,
+        slot_duration_schedule,
+    )
+
+    base_blob_tx_price = BLOB_BASE_COST * base_fee_per_gas
+    if base_blob_tx_price > target_blob_gas_price:
+        blob_schedule_delta = blob_schedule.maximum - blob_schedule.target
+        return U64(
+            excess_blob_gas
+            + blob_gas_used * blob_schedule_delta // blob_schedule.maximum
+        )
+
+    return U64(parent_blob_gas - target_blob_gas_per_block)
+
+
+def calculate_data_fee_for_slot(
+    excess_blob_gas: U64,
+    tx: Transaction,
+    slot_number: U64,
+    slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+) -> Uint:
+    """Calculate the blob data fee using the current slot-duration era."""
+    return Uint(calculate_total_blob_gas(tx)) * calculate_blob_gas_price_for_slot(
+        excess_blob_gas,
+        slot_number,
+        slot_duration_schedule,
+    )
+
+
 def calculate_base_fee_per_gas(
     block_gas_limit: Uint,
     parent_gas_limit: Uint,
     parent_gas_used: Uint,
     parent_base_fee_per_gas: Uint,
     gas_limit_reference: Optional[Uint] = None,
+    slot_duration_ms: Optional[Uint] = None,
 ) -> Uint:
-    """
-    Calculates the base fee per gas for the block.
+    """Calculate base fee while preserving responsiveness per wall-clock time.
 
-    The maximum per-block change is scaled by the slot-duration ratio
-    ``SLOT_DURATION_MS / PREVIOUS_SLOT_DURATION_MS`` so that the fee
-    adjusts at the same rate per unit of wall-clock time as it did with
-    12-second slots.
-
-    Parameters
-    ----------
-    block_gas_limit :
-        Gas limit of the block for which the base fee is being calculated.
-    parent_gas_limit :
-        Gas limit of the parent block, used to derive the gas target the
-        parent block was built against.
-    parent_gas_used :
-        Gas used in the parent block.
-    parent_base_fee_per_gas :
-        Base fee per gas of the parent block.
-    gas_limit_reference :
-        Reference value the block's gas limit is validated against. This
-        equals ``parent_gas_limit`` (the default) except for the first
-        block of the fork, where the parent's gas limit is rescaled by
-        the slot-duration ratio to preserve gas throughput per unit of
-        wall-clock time.
-
-    Returns
-    -------
-    base_fee_per_gas : `Uint`
-        Base fee per gas for the block.
-
+    ``gas_limit_reference`` is transition-scoped and may use the current/parent
+    duration ratio. ``slot_duration_ms`` is era-scoped and is always compared
+    with the pre-schedule base duration, so a later 10 -> 8 transition keeps
+    using 8/12 on every 8-second block rather than reverting to 8/8.
     """
     if gas_limit_reference is None:
         gas_limit_reference = parent_gas_limit
+    if slot_duration_ms is None:
+        slot_duration_ms = get_slot_duration_ms(U64(0))
+
     parent_gas_target = parent_gas_limit // ELASTICITY_MULTIPLIER
     if not check_gas_limit(block_gas_limit, gas_limit_reference):
         raise InvalidBlock
@@ -448,37 +360,26 @@ def calculate_base_fee_per_gas(
         expected_base_fee_per_gas = parent_base_fee_per_gas
     elif parent_gas_used > parent_gas_target:
         gas_used_delta = parent_gas_used - parent_gas_target
-
         parent_fee_gas_delta = parent_base_fee_per_gas * gas_used_delta
         target_fee_gas_delta = parent_fee_gas_delta // parent_gas_target
-
-        # The per-block adjustment is scaled by the slot-duration ratio
-        # so that the base fee reacts to congestion at the same rate per
-        # unit of wall-clock time as it did with 12-second slots. The
-        # division is deferred so the effective denominator is the exact
-        # rational 48/5 rather than a rounded integer.
         base_fee_per_gas_delta = max(
             target_fee_gas_delta
-            * SLOT_DURATION_MS
-            // (PREVIOUS_SLOT_DURATION_MS * BASE_FEE_MAX_CHANGE_DENOMINATOR),
+            * slot_duration_ms
+            // (BASE_SLOT_DURATION_MS * BASE_FEE_MAX_CHANGE_DENOMINATOR),
             Uint(1),
         )
-
         expected_base_fee_per_gas = (
             parent_base_fee_per_gas + base_fee_per_gas_delta
         )
     else:
         gas_used_delta = parent_gas_target - parent_gas_used
-
         parent_fee_gas_delta = parent_base_fee_per_gas * gas_used_delta
         target_fee_gas_delta = parent_fee_gas_delta // parent_gas_target
-
         base_fee_per_gas_delta = (
             target_fee_gas_delta
-            * SLOT_DURATION_MS
-            // (PREVIOUS_SLOT_DURATION_MS * BASE_FEE_MAX_CHANGE_DENOMINATOR)
+            * slot_duration_ms
+            // (BASE_SLOT_DURATION_MS * BASE_FEE_MAX_CHANGE_DENOMINATOR)
         )
-
         expected_base_fee_per_gas = (
             parent_base_fee_per_gas - base_fee_per_gas_delta
         )
@@ -487,49 +388,43 @@ def calculate_base_fee_per_gas(
 
 
 def validate_header(
-    parent_header: Header | PreviousHeader, header: Header
+    parent_header: Header | PreviousHeader,
+    header: Header,
+    slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
 ) -> None:
-    """
-    Verify a block header against its parent.
-
-    In order to consider a block's header valid, the logic for the
-    quantities in the header should match the logic for the block itself.
-    For example the header timestamp should be greater than the block's parent
-    timestamp because the block was created *after* the parent block.
-    Additionally, the block's number should be directly following the parent
-    block's number since it is the next block in the sequence.
-
-    Parameters
-    ----------
-    parent_header :
-        Header of the parent block.
-    header :
-        Header to check for correctness.
-
-    """
+    """Verify a block header against its parent and duration era."""
     if header.number < Uint(1):
         raise InvalidBlock
 
-    excess_blob_gas = calculate_excess_blob_gas(parent_header)
+    excess_blob_gas = calculate_excess_blob_gas_for_slot(
+        parent_header,
+        header.slot_number,
+        slot_duration_schedule,
+    )
     if header.excess_blob_gas != excess_blob_gas:
         raise InvalidBlock
 
     if header.gas_used > header.gas_limit:
         raise InvalidBlock
 
+    parent_slot_number: Optional[U64]
     if isinstance(parent_header, Header):
-        gas_limit_reference = parent_header.gas_limit
+        parent_slot_number = parent_header.slot_number
     else:
-        # First block of the fork: the gas limit is validated against the
-        # parent's gas limit rescaled by the slot-duration ratio, so that
-        # gas throughput per unit of wall-clock time is preserved across
-        # the transition to 10-second slots. The regular +-1/1024
-        # adjustment band applies around the rescaled value.
-        gas_limit_reference = (
-            parent_header.gas_limit
-            * SLOT_DURATION_MS
-            // PREVIOUS_SLOT_DURATION_MS
-        )
+        # The legacy parent predates SLOTNUM. This is only an adapter for the
+        # missing slot value; it is not the transition condition.
+        parent_slot_number = None
+
+    old_duration_ms, new_duration_ms = get_transition_durations(
+        parent_slot_number,
+        header.slot_number,
+        slot_duration_schedule,
+    )
+    gas_limit_reference = scale_transition_limit(
+        parent_header.gas_limit,
+        old_duration_ms,
+        new_duration_ms,
+    )
 
     expected_base_fee_per_gas = calculate_base_fee_per_gas(
         header.gas_limit,
@@ -537,6 +432,7 @@ def validate_header(
         parent_header.gas_used,
         parent_header.base_fee_per_gas,
         gas_limit_reference=gas_limit_reference,
+        slot_duration_ms=new_duration_ms,
     )
     if expected_base_fee_per_gas != header.base_fee_per_gas:
         raise InvalidBlock
@@ -565,78 +461,20 @@ def check_transaction(
     sender: Address,
     tx_state: TransactionState,
 ) -> Tuple[Uint, Tuple[VersionedHash, ...], U64]:
-    """
-    Check if the transaction is includable in the block.
-
-    Parameters
-    ----------
-    block_env :
-        The block scoped environment.
-    block_output :
-        The block output for the current block.
-    tx :
-        The transaction.
-    sender :
-        The recovered sender address of the transaction.
-    tx_state :
-        The transaction state tracker.
-
-    Returns
-    -------
-    effective_gas_price :
-        The price to charge for gas when the transaction is executed.
-    blob_versioned_hashes :
-        The blob versioned hashes of the transaction.
-    tx_blob_gas_used:
-        The blob gas used by the transaction.
-
-    Raises
-    ------
-    InvalidBlock :
-        If the transaction is not includable.
-    GasUsedExceedsLimitError :
-        If the gas used by the transaction exceeds the block's gas limit.
-    NonceMismatchError :
-        If the nonce of the transaction is not equal to the sender's nonce.
-    InsufficientBalanceError :
-        If the sender's balance is not enough to pay for the transaction.
-    InvalidSenderError :
-        If the transaction is from an address that does not exist anymore.
-    PriorityFeeGreaterThanMaxFeeError :
-        If the priority fee is greater than the maximum fee per gas.
-    InsufficientMaxFeePerGasError :
-        If the maximum fee per gas is insufficient for the transaction.
-    InsufficientMaxFeePerBlobGasError :
-        If the maximum fee per blob gas is insufficient for the transaction.
-    BlobGasLimitExceededError :
-        If the blob gas used by the transaction exceeds the block's blob gas
-        limit.
-    InvalidBlobVersionedHashError :
-        If the transaction contains a blob versioned hash with an invalid
-        version.
-    NoBlobDataError :
-        If the transaction is a type 3 but has no blobs.
-    BlobCountExceededError :
-        If the transaction is a type 3 and has more blobs than the limit.
-    TransactionTypeContractCreationError:
-        If the transaction type is not allowed to create contracts.
-    EmptyAuthorizationListError :
-        If the transaction is a SetCodeTransaction and the authorization list
-        is empty.
-
-    """
+    """Check whether a transaction is includable in the current block."""
     regular_gas_available = (
         block_env.block_gas_limit - block_output.block_gas_used
     )
     state_gas_available = (
         block_env.block_gas_limit - block_output.block_state_gas_used
     )
-    blob_gas_available = MAX_BLOB_GAS_PER_BLOCK - block_output.blob_gas_used
+    blob_gas_available = (
+        get_max_blob_gas_per_block(block_env.slot_number)
+        - block_output.blob_gas_used
+    )
 
-    # EIP-8037 per-dimension inclusion check.
     if min(TX_MAX_GAS_LIMIT, tx.gas) > regular_gas_available:
         raise GasUsedExceedsLimitError("regular gas used exceeds limit")
-
     if tx.gas > state_gas_available:
         raise GasUsedExceedsLimitError("state gas used exceeds limit")
 
@@ -682,7 +520,10 @@ def check_transaction(
                     "invalid blob versioned hash"
                 )
 
-        blob_gas_price = calculate_blob_gas_price(block_env.excess_blob_gas)
+        blob_gas_price = calculate_blob_gas_price_for_slot(
+            block_env.excess_blob_gas,
+            block_env.slot_number,
+        )
         if Uint(tx.max_fee_per_blob_gas) < blob_gas_price:
             raise InsufficientMaxFeePerBlobGasError(
                 "insufficient max fee per blob gas"
@@ -729,34 +570,13 @@ def make_receipt(
     cumulative_gas_used: Uint,
     logs: Tuple[Log, ...],
 ) -> Bytes | Receipt:
-    """
-    Make the receipt for a transaction that was executed.
-
-    Parameters
-    ----------
-    tx :
-        The executed transaction.
-    error :
-        Error in the top level frame of the transaction, if any.
-    cumulative_gas_used :
-        The total gas used so far in the block after the transaction was
-        executed. This is the gas used after refunds.
-    logs :
-        The logs produced by the transaction.
-
-    Returns
-    -------
-    receipt :
-        The receipt for the transaction.
-
-    """
+    """Make a receipt for an executed transaction."""
     receipt = Receipt(
         succeeded=error is None,
         cumulative_gas_used=cumulative_gas_used,
         bloom=logs_bloom(logs),
         logs=logs,
     )
-
     return encode_receipt(tx, receipt)
 
 
@@ -765,33 +585,7 @@ def process_checked_system_transaction(
     target_address: Address,
     data: Bytes,
 ) -> MessageCallOutput:
-    """
-    Process a system transaction and raise an error if the contract does not
-    contain code or if the transaction fails.
-
-    Parameters
-    ----------
-    block_env :
-        The block scoped environment.
-    target_address :
-        Address of the contract to call.
-    data :
-        Data to pass to the contract.
-
-    Returns
-    -------
-    system_tx_output : `MessageCallOutput`
-        Output of processing the system transaction.
-
-    """
-    # Pre-check that the system contract has code. We use a throwaway
-    # TransactionState here that is *never* propagated back to BlockState
-    # (no incorporate_tx_into_block call); the same get_account / get_code
-    # lookups are performed and properly tracked by
-    # process_unchecked_system_transaction below, which this function
-    # always calls. Reading via a TransactionState (rather than directly
-    # against pre_state) lets us see system contracts deployed earlier in
-    # the same block — see EIP-7002 and EIP-7251 for this edge case.
+    """Process a system transaction and require executable target code."""
     untracked_state = TransactionState(parent=block_env.state)
     system_contract_code = get_code(
         untracked_state,
@@ -800,8 +594,7 @@ def process_checked_system_transaction(
 
     if len(system_contract_code) == 0:
         raise InvalidBlock(
-            f"System contract address {target_address.hex()} does not "
-            "contain code"
+            f"System contract address {target_address.hex()} does not contain code"
         )
 
     system_tx_output = process_unchecked_system_transaction(
@@ -809,13 +602,11 @@ def process_checked_system_transaction(
         target_address,
         data,
     )
-
     if system_tx_output.error:
         raise InvalidBlock(
             f"System contract ({target_address.hex()}) call failed: "
             f"{system_tx_output.error}"
         )
-
     return system_tx_output
 
 
@@ -824,25 +615,7 @@ def process_unchecked_system_transaction(
     target_address: Address,
     data: Bytes,
 ) -> MessageCallOutput:
-    """
-    Process a system transaction without checking if the contract contains
-    code or if the transaction fails.
-
-    Parameters
-    ----------
-    block_env :
-        The block scoped environment.
-    target_address :
-        Address of the contract to call.
-    data :
-        Data to pass to the contract.
-
-    Returns
-    -------
-    system_tx_output : `MessageCallOutput`
-        Output of processing the system transaction.
-
-    """
+    """Process a system transaction without pre- or post-execution checks."""
     system_tx_state = TransactionState(parent=block_env.state)
     system_contract_code = get_code(
         system_tx_state,
@@ -891,11 +664,9 @@ def process_unchecked_system_transaction(
     )
 
     system_tx_output = process_message_call(system_tx_message)
-
     incorporate_tx_into_block(
         system_tx_state, block_env.block_access_list_builder
     )
-
     return system_tx_output
 
 
@@ -904,31 +675,7 @@ def apply_body(
     transactions: Tuple[LegacyTransaction | Bytes, ...],
     withdrawals: Tuple[Withdrawal, ...],
 ) -> vm.BlockOutput:
-    """
-    Executes a block.
-
-    Many of the contents of a block are stored in data structures called
-    tries. There is a transactions trie which is similar to a ledger of the
-    transactions stored in the current block. There is also a receipts trie
-    which stores the results of executing a transaction, like the post state
-    and gas used. This function creates and executes the block that is to be
-    added to the chain.
-
-    Parameters
-    ----------
-    block_env :
-        The block scoped environment.
-    transactions :
-        Transactions included in the block.
-    withdrawals :
-        Withdrawals to be processed in the current block.
-
-    Returns
-    -------
-    block_output :
-        The block output for the current block.
-
-    """
+    """Execute a block body."""
     block_output = vm.BlockOutput()
 
     process_unchecked_system_transaction(
@@ -936,23 +683,19 @@ def apply_body(
         target_address=BEACON_ROOTS_ADDRESS,
         data=block_env.parent_beacon_block_root,
     )
-
     process_unchecked_system_transaction(
         block_env=block_env,
         target_address=HISTORY_STORAGE_ADDRESS,
-        data=block_env.block_hashes[-1],  # The parent hash
+        data=block_env.block_hashes[-1],
     )
 
     for i, tx in enumerate(map(decode_transaction, transactions)):
         process_transaction(block_env, block_output, tx, Uint(i))
 
-    # EIP-7928: Post-execution operations use index N+1
     block_env.block_access_list_builder.block_access_index = BlockAccessIndex(
         ulen(transactions) + Uint(1)
     )
-
     process_withdrawals(block_env, block_output, withdrawals)
-
     process_general_purpose_requests(
         block_env=block_env,
         block_output=block_output,
@@ -961,13 +704,10 @@ def apply_body(
     block_output.block_access_list = build_block_access_list(
         block_env.block_access_list_builder, block_env.state
     )
-
-    # Validate block access list gas limit constraint (EIP-7928)
     validate_block_access_list_gas_limit(
         block_access_list=block_output.block_access_list,
         block_gas_limit=block_env.block_gas_limit,
     )
-
     return block_output
 
 
@@ -975,18 +715,7 @@ def process_general_purpose_requests(
     block_env: vm.BlockEnvironment,
     block_output: vm.BlockOutput,
 ) -> None:
-    """
-    Process all the requests in the block.
-
-    Parameters
-    ----------
-    block_env :
-        The execution environment for the Block.
-    block_output :
-        The block output for the current block.
-
-    """
-    # Requests are to be in ascending order of request type
+    """Process general-purpose execution requests in ascending type order."""
     deposit_requests = parse_deposit_requests(block_output)
     requests_from_execution = block_output.requests
     if len(deposit_requests) > 0:
@@ -997,7 +726,6 @@ def process_general_purpose_requests(
         target_address=WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
         data=b"",
     )
-
     if len(system_withdrawal_tx_output.return_data) > 0:
         requests_from_execution.append(
             WITHDRAWAL_REQUEST_TYPE + system_withdrawal_tx_output.return_data
@@ -1008,7 +736,6 @@ def process_general_purpose_requests(
         target_address=CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
         data=b"",
     )
-
     if len(system_consolidation_tx_output.return_data) > 0:
         requests_from_execution.append(
             CONSOLIDATION_REQUEST_TYPE
@@ -1020,7 +747,6 @@ def process_general_purpose_requests(
         target_address=BUILDER_DEPOSIT_CONTRACT_ADDRESS,
         data=b"",
     )
-
     if len(system_builder_deposit_tx_output.return_data) > 0:
         requests_from_execution.append(
             BUILDER_DEPOSIT_REQUEST_TYPE
@@ -1032,11 +758,9 @@ def process_general_purpose_requests(
         target_address=BUILDER_EXIT_CONTRACT_ADDRESS,
         data=b"",
     )
-
     if len(system_builder_exit_tx_output.return_data) > 0:
         requests_from_execution.append(
-            BUILDER_EXIT_REQUEST_TYPE
-            + system_builder_exit_tx_output.return_data
+            BUILDER_EXIT_REQUEST_TYPE + system_builder_exit_tx_output.return_data
         )
 
 
@@ -1046,30 +770,7 @@ def process_transaction(
     tx: Transaction,
     index: Uint,
 ) -> None:
-    """
-    Execute a transaction against the provided environment.
-
-    This function processes the actions needed to execute a transaction.
-    It decrements the sender's account balance after calculating the gas fee
-    and refunds them the proper amount after execution. Calling contracts,
-    deploying code, and incrementing nonces are all examples of actions that
-    happen within this function or from a call made within this function.
-
-    Accounts that are marked for deletion are processed and destroyed after
-    execution.
-
-    Parameters
-    ----------
-    block_env :
-        Environment for the Ethereum Virtual Machine.
-    block_output :
-        The block output for the current block.
-    tx :
-        Transaction to execute.
-    index:
-        Index of the transaction in the block.
-
-    """
+    """Execute a transaction against the provided block environment."""
     block_env.block_access_list_builder.block_access_index = BlockAccessIndex(
         index + Uint(1)
     )
@@ -1090,7 +791,6 @@ def process_transaction(
 
     sender = recover_sender(tx)
     intrinsic = validate_transaction(tx, sender)
-
     (
         effective_gas_price,
         blob_versioned_hashes,
@@ -1104,28 +804,26 @@ def process_transaction(
     )
 
     sender_account = get_account(tx_state, sender)
-
     if isinstance(tx, BlobTransaction):
-        blob_gas_fee = calculate_data_fee(block_env.excess_blob_gas, tx)
+        blob_gas_fee = calculate_data_fee_for_slot(
+            block_env.excess_blob_gas,
+            tx,
+            block_env.slot_number,
+        )
     else:
         blob_gas_fee = Uint(0)
 
     effective_gas_fee = tx.gas * effective_gas_price
-
-    # Split execution gas into a regular grant (capped by the remaining
-    # regular-gas budget) and a state gas reservoir.
     allocation = allocate_execution_gas(tx.gas, intrinsic)
 
     increment_nonce(tx_state, sender)
-
     sender_balance_after_gas_fee = (
         Uint(sender_account.balance) - effective_gas_fee - blob_gas_fee
     )
     set_account_balance(tx_state, sender, U256(sender_balance_after_gas_fee))
 
-    access_list_addresses = set()
+    access_list_addresses = {block_env.coinbase}
     access_list_storage_keys = set()
-    access_list_addresses.add(block_env.coinbase)
     if has_access_list(tx):
         for access in tx.access_list:
             access_list_addresses.add(access.account)
@@ -1153,9 +851,7 @@ def process_transaction(
     )
 
     message = prepare_message(block_env, tx_env, tx)
-
     tx_output = process_message_call(message)
-
     settlement = settle_transaction_gas(
         tx.gas,
         intrinsic,
@@ -1166,35 +862,27 @@ def process_transaction(
     )
 
     gas_refund_amount = settlement.gas_left * effective_gas_price
-
-    # For non-1559 transactions effective_gas_price == tx.gas_price
     priority_fee_per_gas = effective_gas_price - block_env.base_fee_per_gas
     transaction_fee = settlement.gas_used * priority_fee_per_gas
 
-    # refund gas
     create_ether(tx_state, sender, U256(gas_refund_amount))
-
-    # transfer miner fees
     create_ether(tx_state, block_env.coinbase, U256(transaction_fee))
 
     block_output.block_gas_used += settlement.regular_gas_used
     block_output.block_state_gas_used += settlement.state_gas_used
     block_output.blob_gas_used += tx_blob_gas_used
-
     block_output.cumulative_gas_used += settlement.gas_used
+
     receipt = make_receipt(
         tx, tx_output.error, block_output.cumulative_gas_used, tx_output.logs
     )
-
     receipt_key = rlp.encode(Uint(index))
     block_output.receipt_keys += (receipt_key,)
-
     trie_set(
         block_output.receipts_trie,
         receipt_key,
         receipt,
     )
-
     block_output.block_logs += tx_output.logs
 
     for address in tx_output.accounts_to_delete:
@@ -1208,52 +896,20 @@ def process_withdrawals(
     block_output: vm.BlockOutput,
     withdrawals: Tuple[Withdrawal, ...],
 ) -> None:
-    """
-    Increase the balance of the withdrawing account.
-    """
+    """Increase balances for withdrawals and record their trie entries."""
     wd_state = TransactionState(parent=block_env.state)
-
     for i, wd in enumerate(withdrawals):
         trie_set(
             block_output.withdrawals_trie,
             rlp.encode(Uint(i)),
             rlp.encode(wd),
         )
-
         create_ether(wd_state, wd.address, wd.amount * GWEI_TO_WEI)
-
     incorporate_tx_into_block(wd_state, block_env.block_access_list_builder)
 
 
 def check_gas_limit(gas_limit: Uint, parent_gas_limit: Uint) -> bool:
-    """
-    Validates the gas limit for a block.
-
-    The bounds of the gas limit, ``max_adjustment_delta``, is set as the
-    quotient of the parent block's gas limit and the
-    ``LIMIT_ADJUSTMENT_FACTOR``. Therefore, if the gas limit that is passed
-    through as a parameter is greater than or equal to the *sum* of the
-    parent's gas and the adjustment delta then the limit for gas is too high
-    and fails this function's check. Similarly, if the limit is less than or
-    equal to the *difference* of the parent's gas and the adjustment delta *or*
-    the predefined ``LIMIT_MINIMUM`` then this function's check fails because
-    the gas limit doesn't allow for a sufficient or reasonable amount of gas to
-    be used on a block.
-
-    Parameters
-    ----------
-    gas_limit :
-        Gas limit to validate.
-
-    parent_gas_limit :
-        Gas limit of the parent block.
-
-    Returns
-    -------
-    check : `bool`
-        True if gas limit constraints are satisfied, False otherwise.
-
-    """
+    """Validate a block gas limit against its reference value."""
     max_adjustment_delta = parent_gas_limit // GasCosts.LIMIT_ADJUSTMENT_FACTOR
     if gas_limit >= parent_gas_limit + max_adjustment_delta:
         return False
@@ -1261,5 +917,4 @@ def check_gas_limit(gas_limit: Uint, parent_gas_limit: Uint) -> bool:
         return False
     if gas_limit < GasCosts.LIMIT_MINIMUM:
         return False
-
     return True
