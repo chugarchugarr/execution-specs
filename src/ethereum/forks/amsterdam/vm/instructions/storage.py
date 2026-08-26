@@ -11,6 +11,8 @@ Introduction
 Implementations of the EVM storage related instructions.
 """
 
+from ethereum.crypto.hash import keccak256
+from ethereum_types.bytes import Bytes32
 from ethereum_types.numeric import Uint
 
 from ...fork_types import ExecutionGas, StateGas
@@ -32,6 +34,41 @@ from ..gas import (
     credit_state_gas_refund,
 )
 from ..stack import pop, push
+
+
+# Experimental, wire-compatible proof encoding only. Three domain-separated
+# access-list storage keys prepay 3 * TX_ACCESS_LIST_STORAGE_KEY outside the
+# child frame. The matching SSTORE pays the remainder of STORAGE_WRITE inside
+# the frame. A final EIP should use an explicit transaction representation.
+_WRITE_PREPAYMENT_DOMAIN = b"glamsterdam-write-prepayment-v1"
+_WRITE_PREPAYMENT_MARKER_COUNT = 3
+
+
+def _write_prepayment_markers(evm: Evm, key: Bytes32) -> tuple[Bytes32, ...]:
+    """Return the access-list marker keys for one target storage slot."""
+    prefix = _WRITE_PREPAYMENT_DOMAIN + bytes(evm.current_target) + bytes(key)
+    return tuple(
+        keccak256(prefix + bytes([index]))
+        for index in range(_WRITE_PREPAYMENT_MARKER_COUNT)
+    )
+
+
+def _consume_write_prepayment(evm: Evm, key: Bytes32) -> bool:
+    """Consume one experimental prepayment if all marker keys are present."""
+    declared = evm.tx_env.access_list_storage_keys
+    if (evm.current_target, key) not in declared:
+        return False
+
+    markers = _write_prepayment_markers(evm, key)
+    marker_entries = tuple((evm.current_target, marker) for marker in markers)
+    if not all(entry in declared for entry in marker_entries):
+        return False
+
+    # The intrinsic access-list charges are paid once. Consume the markers
+    # transaction-wide so a reverted/failed child cannot reuse that prepayment.
+    for entry in marker_entries:
+        declared.remove(entry)
+    return True
 
 
 def sload(evm: Evm) -> None:
@@ -120,7 +157,13 @@ def sstore(evm: Evm) -> None:
 
     # Write cost: charged on the first change to the slot this transaction.
     if original_value == current_value and current_value != new_value:
-        gas_cost += GasCosts.STORAGE_WRITE
+        if _consume_write_prepayment(evm, key):
+            prepaid = GasCosts.TX_ACCESS_LIST_STORAGE_KEY * Uint(
+                _WRITE_PREPAYMENT_MARKER_COUNT
+            )
+            gas_cost += GasCosts.STORAGE_WRITE - prepaid
+        else:
+            gas_cost += GasCosts.STORAGE_WRITE
 
     # Refund Counter Calculation
     if current_value != new_value:
