@@ -20,26 +20,26 @@ jobs:
         run: |
           python .github/eip8198_tooling_closure.py
           uv run ruff format \
-            .github/eip8198_tooling_closure.py \
             src/ethereum_spec_tools/forks.py \
             src/ethereum_spec_tools/new_fork/builder.py \
             tests/evm_tools/test_fork_cache.py \
             tests/evm_tools/test_new_fork.py \
             src/ethereum/forks/amsterdam/slot_timing.py
           uv run ruff check --fix \
-            .github/eip8198_tooling_closure.py \
             src/ethereum_spec_tools/forks.py \
             src/ethereum_spec_tools/new_fork/builder.py \
             tests/evm_tools/test_fork_cache.py \
             tests/evm_tools/test_new_fork.py \
             src/ethereum/forks/amsterdam/slot_timing.py
-          just static
-          just spec-tools
-          uv run pytest -q tests/amsterdam/eip8198_quick_slots
 
           git rm \
             .github/workflows/eip8198-tooling-closure.yml \
             .github/eip8198_tooling_closure.py
+
+          just static
+          just spec-tools
+          uv run pytest -q tests/amsterdam/eip8198_quick_slots
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
