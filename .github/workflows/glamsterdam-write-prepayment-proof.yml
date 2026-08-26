@@ -1,0 +1,18 @@
+name: Glamsterdam write-prepayment proof
+
+on:
+  push:
+    branches:
+      - ci/glamsterdam-write-prepayment-proof
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: ./.github/actions/setup-uv
+      - name: Run focused phase-1 proof
+        run: uv run pytest -q tests/amsterdam/eip8038_state_access_gas_cost_increase/test_write_prepayment_prototype.py
