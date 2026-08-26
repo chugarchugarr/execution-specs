@@ -1,17 +1,15 @@
 """
-Prototype tests for preserving fixed-gas call liveness across EIP-8038.
+Prototype test for preserving fixed-gas call liveness across EIP-8038.
 
-This file deliberately separates the problem proof from the protocol mechanism.
-The first test executes the same fixed-gas child write on both sides of the
-Amsterdam transition and demonstrates the liveness regression. The second test
-proves the conservation equation required by a write-prepayment remedy:
+The test first proves the liveness regression independently of any proposed
+protocol change, then pins the conservation equation a write-prepayment remedy
+must satisfy:
 
-    legacy child-frame charge + prepaid repricing delta
+    child-frame charge + prepaid repricing delta
         == Amsterdam child-frame charge
 
-The prototype does not assign a final wire encoding to the prepayment. That is
-kept out of the first proof so the liveness finding can survive or fail on its
-own.
+A later commit replaces the algebraic voucher leg with executable Amsterdam
+semantics only after the regression itself survives the filler.
 """
 
 import pytest
@@ -59,6 +57,10 @@ def test_fixed_gas_sstore_liveness_regresses_at_amsterdam(
     gas and rolls back the write even though the outer transaction has ample
     gas. Increasing only outer transaction gas cannot alter the immutable CALL
     operand.
+
+    The same fixture also proves the accounting invariant required by a later
+    voucher implementation: moving exactly the repricing delta outside the
+    child leaves the total Amsterdam execution charge unchanged.
     """
     before = fork.fork_at(timestamp=BEFORE_TS)
     after = fork.fork_at(timestamp=AFTER_TS)
@@ -70,6 +72,14 @@ def test_fixed_gas_sstore_liveness_regresses_at_amsterdam(
     assert cost_after > cost_before
     fixed_child_gas = (cost_before + cost_after) // 2
     assert cost_before <= fixed_child_gas < cost_after
+
+    # Conservation gate for the future voucher implementation.
+    prepaid_repricing_delta = cost_after - cost_before
+    voucher_frame_charge = cost_after - prepaid_repricing_delta
+    assert prepaid_repricing_delta > 0
+    assert voucher_frame_charge == cost_before
+    assert voucher_frame_charge <= fixed_child_gas
+    assert voucher_frame_charge + prepaid_repricing_delta == cost_after
 
     child_before = pre.deploy_contract(code=Op.SSTORE(0, 2), storage={0: 1})
     child_after = pre.deploy_contract(code=Op.SSTORE(0, 2), storage={0: 1})
@@ -113,39 +123,3 @@ def test_fixed_gas_sstore_liveness_regresses_at_amsterdam(
         child_after: Account(storage={0: 1}),
     }
     blockchain_test(pre=pre, blocks=blocks, post=post)
-
-
-def test_write_prepayment_conserves_amsterdam_execution_charge(
-    fork: Fork,
-) -> None:
-    """
-    Splitting only the repricing delta preserves the Amsterdam gas charge.
-
-    A write voucher must not subsidize the operation. It moves exactly the
-    Amsterdam-minus-parent execution-gas delta to transaction scope and leaves
-    the child frame paying the parent-fork execution charge. The total remains
-    identical to the unmodified Amsterdam execution charge while restoring a
-    fixed budget that lies between the two costs.
-    """
-    before = fork.fork_at(timestamp=BEFORE_TS)
-    after = fork.fork_at(timestamp=AFTER_TS)
-
-    write = _warm_existing_slot_write(fork)
-    legacy_frame_charge = write.execution_cost(before)
-    amsterdam_frame_charge = write.execution_cost(after)
-    prepaid_repricing_delta = amsterdam_frame_charge - legacy_frame_charge
-
-    fixed_child_gas = (legacy_frame_charge + amsterdam_frame_charge) // 2
-
-    # Osaka/current-parent execution remains live under the fixed budget.
-    assert legacy_frame_charge <= fixed_child_gas
-    # Unmodified Amsterdam execution is no longer live.
-    assert amsterdam_frame_charge > fixed_child_gas
-    # The voucher restores the old frame-local requirement.
-    voucher_frame_charge = amsterdam_frame_charge - prepaid_repricing_delta
-    assert voucher_frame_charge == legacy_frame_charge
-    assert voucher_frame_charge <= fixed_child_gas
-    # No resource discount: transaction prepayment + frame charge is exactly
-    # the unmodified Amsterdam execution charge.
-    assert prepaid_repricing_delta > 0
-    assert voucher_frame_charge + prepaid_repricing_delta == amsterdam_frame_charge
