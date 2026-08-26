@@ -1,11 +1,21 @@
 """Tests that EIP-8198 duration changes are schedule-driven."""
 
+import inspect
+
 from ethereum_types.numeric import U64, Uint
 
+from ethereum.forks.amsterdam import fork as amsterdam_fork
+from ethereum.forks.amsterdam.fork import (
+    calculate_base_fee_per_gas,
+    get_max_blob_gas_per_block,
+)
 from ethereum.forks.amsterdam.slot_timing import (
     BASE_SLOT_DURATION_MS,
+    BLOB_GAS_PER_BLOB,
     BlobScheduleParameters,
     SlotDurationEntry,
+    calculate_blob_gas_price_for_slot,
+    get_blob_schedule,
     get_slot_duration_ms,
     get_transition_durations,
     scale_blob_schedule,
@@ -81,10 +91,31 @@ def test_base_fee_response_uses_current_over_base_ratio() -> None:
     assert response_12s == Uint(1200)
     assert response_10s == Uint(1000)
     assert response_8s == Uint(800)
-
-    # Equal response per millisecond: 1200/12s == 1000/10s == 800/8s.
     assert response_12s * Uint(10000) == response_10s * Uint(12000)
     assert response_10s * Uint(8000) == response_8s * Uint(10000)
+
+
+def test_production_base_fee_path_supports_second_era() -> None:
+    """Amsterdam's real base-fee calculator remains wall-clock invariant."""
+    common = dict(
+        block_gas_limit=Uint(60_000_000),
+        parent_gas_limit=Uint(60_000_000),
+        parent_gas_used=Uint(60_000_000),
+        parent_base_fee_per_gas=Uint(960),
+        gas_limit_reference=Uint(60_000_000),
+    )
+
+    fee_10s = calculate_base_fee_per_gas(
+        **common,
+        slot_duration_ms=Uint(10000),
+    )
+    fee_8s = calculate_base_fee_per_gas(
+        **common,
+        slot_duration_ms=Uint(8000),
+    )
+
+    assert fee_10s == Uint(1060)
+    assert fee_8s == Uint(1040)
 
 
 def test_blob_schedule_derives_repeated_eras_from_same_transition() -> None:
@@ -108,3 +139,39 @@ def test_blob_schedule_derives_repeated_eras_from_same_transition() -> None:
         target=U64(10),
         update_fraction=Uint(7_511_574),
     )
+
+
+def test_production_blob_paths_follow_same_schedule() -> None:
+    """Capacity and BLOBBASEFEE inputs both follow the synthetic 8s era."""
+    first_10s_slot = U64(HEGOTA_EPOCH * U64(32))
+    first_8s_slot = U64(FUTURE_TEST_EPOCH * U64(32))
+
+    blob_10s = get_blob_schedule(first_10s_slot, SCHEDULE_12_10_8)
+    blob_8s = get_blob_schedule(first_8s_slot, SCHEDULE_12_10_8)
+    assert blob_10s.maximum == U64(17)
+    assert blob_8s.maximum == U64(13)
+
+    assert get_max_blob_gas_per_block(
+        first_10s_slot, SCHEDULE_12_10_8
+    ) == BLOB_GAS_PER_BLOB * U64(17)
+    assert get_max_blob_gas_per_block(
+        first_8s_slot, SCHEDULE_12_10_8
+    ) == BLOB_GAS_PER_BLOB * U64(13)
+
+    excess = U64(20_000_000)
+    fee_10s = calculate_blob_gas_price_for_slot(
+        excess, first_10s_slot, SCHEDULE_12_10_8
+    )
+    fee_8s = calculate_blob_gas_price_for_slot(
+        excess, first_8s_slot, SCHEDULE_12_10_8
+    )
+    assert fee_8s != fee_10s
+
+
+def test_amsterdam_has_no_12_to_10_transition_special_case() -> None:
+    """The production header path contains no previous-duration constant."""
+    source = inspect.getsource(amsterdam_fork)
+    assert "PREVIOUS_SLOT_DURATION_MS" not in source
+    assert "SLOT_DURATION_MS = Uint(10000)" not in source
+    assert "get_transition_durations" in source
+    assert "scale_transition_limit" in source
