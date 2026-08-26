@@ -15,7 +15,7 @@ jobs:
         with:
           ref: eip8198-slot-time-agnostic
       - uses: ./.github/actions/setup-uv
-      - name: Remove fixed-duration blob logic
+      - name: Derive blob logic from slot schedule and prove it
         shell: bash
         run: |
           python - <<'PY'
@@ -48,7 +48,8 @@ jobs:
           text = text.replace(
               type_anchor,
               type_anchor
-              + '\n\n_INITIAL_BLOB_SCHEDULE = get_blob_schedule(U64(0))\n',
+              + '\n\n_INITIAL_SLOT = U64(0)\n'
+              + '_INITIAL_BLOB_SCHEDULE = get_blob_schedule(_INITIAL_SLOT)\n',
               1,
           )
 
@@ -80,7 +81,7 @@ jobs:
           )
           functions = '''def calculate_excess_blob_gas(
               parent_header: Header | PreviousHeader,
-              current_slot_number: U64 = U64(0),
+              current_slot_number: U64 = _INITIAL_SLOT,
               slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
           ) -> U64:
               """Calculate excess blob gas using the current duration era."""
@@ -128,7 +129,7 @@ jobs:
 
           def calculate_blob_gas_price(
               excess_blob_gas: U64,
-              slot_number: U64 = U64(0),
+              slot_number: U64 = _INITIAL_SLOT,
               slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
           ) -> Uint:
               """Calculate the blob gas price for the supplied duration era."""
@@ -142,7 +143,7 @@ jobs:
           def calculate_data_fee(
               excess_blob_gas: U64,
               tx: Transaction,
-              slot_number: U64 = U64(0),
+              slot_number: U64 = _INITIAL_SLOT,
               slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
           ) -> Uint:
               """Calculate the blob data fee for the supplied duration era."""
@@ -156,8 +157,12 @@ jobs:
           path.write_text(text)
           PY
 
+          uv run ruff check --fix src/ethereum/forks/amsterdam/vm/gas.py
           uv run ruff format src/ethereum/forks/amsterdam/vm/gas.py
           uv run ruff check src/ethereum/forks/amsterdam/vm/gas.py
+          just static
+          uv run pytest -q tests/amsterdam/eip8198_quick_slots/test_slot_timing.py
+
           git rm .github/workflows/eip8198-gas-cleanup.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
