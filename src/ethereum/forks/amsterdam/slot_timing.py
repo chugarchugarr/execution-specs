@@ -16,11 +16,17 @@ from typing import Final, Optional, Tuple, final
 
 from ethereum_types.numeric import U64, Uint
 
+from ethereum.utils.numeric import taylor_exponential
+
 BASE_SLOT_DURATION_MS: Final[Uint] = Uint(12000)
 """Pre-schedule slot duration, in milliseconds."""
 
 SLOTS_PER_EPOCH: Final[U64] = U64(32)
 """Number of slots per epoch; EIP-8198 does not change this value."""
+
+BLOB_GAS_PER_BLOB: Final[U64] = U64(2**17)
+BLOB_BASE_COST: Final[Uint] = Uint(2**13)
+BLOB_MIN_GASPRICE: Final[Uint] = Uint(1)
 
 
 @final
@@ -35,6 +41,15 @@ class SlotDurationEntry:
 SlotDurationSchedule = Tuple[SlotDurationEntry, ...]
 
 
+# The Amsterdam execution package is activated at the EIP-8198 fork boundary,
+# so epoch zero here is relative to the package's active era. The pre-Amsterdam
+# parent remains represented by BASE_SLOT_DURATION_MS. Future duration changes
+# are additional entries; protocol logic does not change.
+SLOT_DURATION_SCHEDULE: Final[SlotDurationSchedule] = (
+    SlotDurationEntry(U64(0), Uint(10000)),
+)
+
+
 @final
 @dataclass(frozen=True)
 class BlobScheduleParameters:
@@ -43,6 +58,14 @@ class BlobScheduleParameters:
     maximum: U64
     target: U64
     update_fraction: Uint
+
+
+BASE_BLOB_SCHEDULE: Final[BlobScheduleParameters] = BlobScheduleParameters(
+    maximum=U64(21),
+    target=U64(14),
+    update_fraction=Uint(11_684_671),
+)
+"""Blob schedule in force before EIP-8198 activates."""
 
 
 def validate_slot_duration_schedule(schedule: SlotDurationSchedule) -> None:
@@ -58,7 +81,7 @@ def validate_slot_duration_schedule(schedule: SlotDurationSchedule) -> None:
 
 def get_slot_duration_ms(
     slot_number: U64,
-    schedule: SlotDurationSchedule,
+    schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
     base_duration_ms: Uint = BASE_SLOT_DURATION_MS,
     slots_per_epoch: U64 = SLOTS_PER_EPOCH,
 ) -> Uint:
@@ -79,7 +102,7 @@ def get_slot_duration_ms(
 def get_transition_durations(
     parent_slot_number: Optional[U64],
     current_slot_number: U64,
-    schedule: SlotDurationSchedule,
+    schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
     base_duration_ms: Uint = BASE_SLOT_DURATION_MS,
 ) -> Tuple[Uint, Uint]:
     """Return parent/current execution-payload durations.
@@ -155,3 +178,41 @@ def scale_blob_schedule(
         // (old_headroom * new_duration_ms)
     )
     return BlobScheduleParameters(maximum, target, update_fraction)
+
+
+def get_blob_schedule(
+    slot_number: U64,
+    schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+    base_duration_ms: Uint = BASE_SLOT_DURATION_MS,
+    base_blob_schedule: BlobScheduleParameters = BASE_BLOB_SCHEDULE,
+) -> BlobScheduleParameters:
+    """Return blob parameters derived through every active duration era."""
+    validate_slot_duration_schedule(schedule)
+    current_epoch = slot_number // SLOTS_PER_EPOCH
+    duration_ms = base_duration_ms
+    blob_schedule = base_blob_schedule
+
+    for entry in schedule:
+        if current_epoch < entry.epoch:
+            break
+        if entry.duration_ms != duration_ms:
+            blob_schedule = scale_blob_schedule(
+                blob_schedule, duration_ms, entry.duration_ms
+            )
+            duration_ms = entry.duration_ms
+
+    return blob_schedule
+
+
+def calculate_blob_gas_price_for_slot(
+    excess_blob_gas: U64,
+    slot_number: U64,
+    schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+) -> Uint:
+    """Calculate the blob gas price using the current duration era."""
+    blob_schedule = get_blob_schedule(slot_number, schedule)
+    return taylor_exponential(
+        BLOB_MIN_GASPRICE,
+        Uint(excess_blob_gas),
+        blob_schedule.update_fraction,
+    )
