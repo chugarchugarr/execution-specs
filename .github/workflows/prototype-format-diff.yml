@@ -1,0 +1,19 @@
+name: Prototype format diff
+
+on:
+  pull_request:
+    paths:
+      - "tests/amsterdam/eip8038_state_access_gas_cost_increase/test_write_prepayment_prototype.py"
+      - ".github/workflows/prototype-format-diff.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diff:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: ./.github/actions/setup-uv
+      - name: Show Ruff format diff
+        run: uv run ruff format --diff tests/amsterdam/eip8038_state_access_gas_cost_increase/test_write_prepayment_prototype.py
