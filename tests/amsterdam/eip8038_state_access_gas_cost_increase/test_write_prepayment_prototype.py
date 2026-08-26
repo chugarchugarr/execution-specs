@@ -13,6 +13,8 @@ If either invariant fails as the Amsterdam branch changes, this prototype
 must stop rather than silently adapt its claim.
 """
 
+# ruff: noqa: I001
+
 from enum import Enum
 
 from ethereum.forks.amsterdam.vm import gas as amsterdam_gas
@@ -88,9 +90,9 @@ def test_prepayment_preserves_glamsterdam_execution_resource_charge() -> None:
     # Ordinary Amsterdam path: the child first touches a cold account and a
     # cold existing storage slot, then performs the first non-zero overwrite.
     baseline_call_access = int(amsterdam_gas.GasCosts.COLD_ACCOUNT_ACCESS)
-    baseline_storage = int(
-        amsterdam_gas.GasCosts.COLD_STORAGE_ACCESS
-    ) + int(amsterdam_gas.GasCosts.STORAGE_WRITE)
+    baseline_storage = int(amsterdam_gas.GasCosts.COLD_STORAGE_ACCESS) + int(
+        amsterdam_gas.GasCosts.STORAGE_WRITE
+    )
     baseline_core_charge = baseline_call_access + baseline_storage
 
     # Proposed accounting split:
