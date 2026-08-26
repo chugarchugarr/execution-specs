@@ -603,7 +603,8 @@ def blob_base_fee(evm: Evm) -> None:
 
     # OPERATION
     blob_base_fee = calculate_blob_gas_price(
-        evm.message.block_env.excess_blob_gas
+        evm.message.block_env.excess_blob_gas,
+        evm.message.block_env.slot_number,
     )
     push(evm.stack, U256(blob_base_fee))
 
