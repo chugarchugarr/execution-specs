@@ -155,14 +155,9 @@ def scale_blob_schedule(
     if previous.maximum <= previous.target:
         raise ValueError("blob maximum must exceed blob target")
 
-    maximum = U64(
-        Uint(previous.maximum) * new_duration_ms // old_duration_ms
-    )
+    maximum = U64(Uint(previous.maximum) * new_duration_ms // old_duration_ms)
     target = U64(
-        (
-            Uint(previous.target) * new_duration_ms
-            + old_duration_ms // Uint(2)
-        )
+        (Uint(previous.target) * new_duration_ms + old_duration_ms // Uint(2))
         // old_duration_ms
     )
     if maximum <= target:
