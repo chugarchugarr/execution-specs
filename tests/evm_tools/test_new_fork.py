@@ -25,44 +25,49 @@ from ethereum_spec_tools.new_fork.codemod.remove_docstring import (
     ids=lambda tf: f"{tf}",
 )
 def test_end_to_end(template_fork: str) -> None:
-    """
-    Test that the ethereum-spec-new-fork CLI tool creates a fork from a
-    template, correctly modifying names, blob parameters, and imports.
-    """
+    """Create forks without imposing fixed blob literals on schedules."""
     with TemporaryDirectory() as base_dir:
         output_dir = Path(base_dir) / "ethereum"
         fork_dir = output_dir / "e2e_fork"
+        template_path = Path("src/ethereum/forks") / template_fork
+        uses_slot_duration_schedule = (
+            template_path / "slot_timing.py"
+        ).exists()
 
-        new_fork(
-            [
-                "--new-fork",
-                "e2e_fork",
-                "--template-fork",
-                template_fork,
-                "--target-blob-gas-per-block",
-                "199",
-                "--blob-base-fee-update-fraction",
-                "750",
-                "--min-blob-gasprice",
-                "2",
-                "--gas-per-blob",
-                "1",
-                "--at-timestamp",
-                "7",
-                "--max-blob-gas-per-block",
-                "99",
-                "--blob-schedule-target",
-                "88",
-                "--blob-schedule-max",
-                "77",
-                "--output",
-                str(output_dir),
-            ]
-        )
+        args = [
+            "--new-fork",
+            "e2e_fork",
+            "--template-fork",
+            template_fork,
+            "--at-timestamp",
+            "7",
+            "--output",
+            str(output_dir),
+        ]
+        if not uses_slot_duration_schedule:
+            args.extend(
+                [
+                    "--target-blob-gas-per-block",
+                    "199",
+                    "--blob-base-fee-update-fraction",
+                    "750",
+                    "--min-blob-gasprice",
+                    "2",
+                    "--gas-per-blob",
+                    "1",
+                    "--max-blob-gas-per-block",
+                    "99",
+                    "--blob-schedule-target",
+                    "88",
+                    "--blob-schedule-max",
+                    "77",
+                ]
+            )
+
+        new_fork(args)
 
         with (fork_dir / "__init__.py").open("r") as f:
             source = f.read()
-
             assert '"""' not in source[:20]
             assert "FORK_CRITERIA: ForkCriteria = ByTimestamp(7)" in source
             assert template_fork.capitalize() not in source
@@ -71,33 +76,58 @@ def test_end_to_end(template_fork: str) -> None:
             source = f.read()
             assert "E2E Fork" in source
 
-        with (fork_dir / "vm" / "gas.py").open("r") as f:
-            source = f.read()
+        if uses_slot_duration_schedule:
+            with (fork_dir / "slot_timing.py").open("r") as f:
+                source = f.read()
+                assert "SLOT_DURATION_SCHEDULE" in source
+                assert "SlotDurationEntry" in source
+        else:
+            with (fork_dir / "vm" / "gas.py").open("r") as f:
+                source = f.read()
+                expected = [
+                    "BLOB_TARGET_GAS_PER_BLOCK: Final[U64] = U64(199)",
+                    "PER_BLOB: Final[U64] = U64(1)",
+                    "BLOB_MIN_GASPRICE: Final[Uint] = Uint(2)",
+                    "BLOB_BASE_FEE_UPDATE_FRACTION: Final[Uint] = Uint(750)",
+                    "BLOB_SCHEDULE_TARGET: Final[U64] = U64(88)",
+                    "BLOB_SCHEDULE_MAX: Final[U64] = U64(77)",
+                ]
+                for needle in expected:
+                    assert needle in source
 
-            expected = [
-                "BLOB_TARGET_GAS_PER_BLOCK: Final[U64] = U64(199)",
-                "PER_BLOB: Final[U64] = U64(1)",
-                "BLOB_MIN_GASPRICE: Final[Uint] = Uint(2)",
-                "BLOB_BASE_FEE_UPDATE_FRACTION: Final[Uint] = Uint(750)",
-                "BLOB_SCHEDULE_TARGET: Final[U64] = U64(88)",
-                "BLOB_SCHEDULE_MAX: Final[U64] = U64(77)",
-            ]
+            with (fork_dir / "fork.py").open("r") as f:
+                assert (
+                    "MAX_BLOB_GAS_PER_BLOCK: Final[U64] = U64(99)" in f.read()
+                )
 
-            for needle in expected:
-                assert needle in source
-
-        with (fork_dir / "fork.py").open("r") as f:
-            assert "MAX_BLOB_GAS_PER_BLOCK: Final[U64] = U64(99)" in f.read()
-
-        # TODO: Remove this condition once trie.py is removed from all
-        # forks (i.e. fork-agnostic Trie is ported to pre-amsterdam forks).
-        template_has_trie = (
-            Path("src/ethereum/forks") / template_fork / "trie.py"
-        ).exists()
+        template_has_trie = (template_path / "trie.py").exists()
         if template_has_trie:
             assert (fork_dir / "trie.py").exists()
         else:
             assert not (fork_dir / "trie.py").exists()
+
+
+def test_schedule_driven_template_rejects_legacy_blob_override() -> None:
+    """Reject legacy blob knobs instead of silently changing aliases."""
+    template_fork = Hardfork.discover()[-1].short_name
+    template_path = Path("src/ethereum/forks") / template_fork
+    if not (template_path / "slot_timing.py").exists():
+        pytest.skip("latest fork is not schedule-driven")
+
+    with TemporaryDirectory() as base_dir:
+        with pytest.raises(ValueError, match="SLOT_DURATION_SCHEDULE"):
+            new_fork(
+                [
+                    "--new-fork",
+                    "e2e_fork",
+                    "--template-fork",
+                    template_fork,
+                    "--blob-schedule-target",
+                    "88",
+                    "--output",
+                    str(Path(base_dir) / "ethereum"),
+                ]
+            )
 
 
 def has_module_docstring(file_path: Path) -> bool:

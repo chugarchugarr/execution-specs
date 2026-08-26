@@ -116,12 +116,22 @@ class ForkOverrides:
         fork_mod = template.module("fork")
         gas_costs = template.module("vm.gas").GasCosts
 
+        max_blob_gas_per_block = getattr(
+            fork_mod, "MAX_BLOB_GAS_PER_BLOCK", None
+        )
+        if max_blob_gas_per_block is None:
+            get_max_blob_gas_per_block = getattr(
+                fork_mod, "get_max_blob_gas_per_block", None
+            )
+            if get_max_blob_gas_per_block is not None:
+                max_blob_gas_per_block = get_max_blob_gas_per_block(U64(0))
+        if (
+            self.max_blob_gas_per_block is not None
+            and self.max_blob_gas_per_block != max_blob_gas_per_block
+        ):
+            return False
+
         checks = (
-            (
-                self.max_blob_gas_per_block,
-                fork_mod,
-                "MAX_BLOB_GAS_PER_BLOCK",
-            ),
             (
                 self.blob_target_gas_per_block,
                 gas_costs,

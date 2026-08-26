@@ -504,10 +504,27 @@ class ForkBuilder:
             self._modify(working_directory)
             self._commit(package)
 
+    def _uses_slot_duration_schedule(self) -> bool:
+        """Return whether the template derives blob limits from slot time."""
+        template_path = self.template_fork.path
+        return (
+            template_path is not None
+            and (Path(template_path) / "slot_timing.py").is_file()
+        )
+
+    def _reject_legacy_blob_override(self, name: str) -> None:
+        """Reject fixed-blob overrides on schedule-driven forks."""
+        if self._uses_slot_duration_schedule():
+            raise ValueError(
+                f"{name} is a legacy fixed-blob override and cannot be "
+                "applied to a SLOT_DURATION_SCHEDULE-driven fork"
+            )
+
     def modify_target_blob_gas_per_block(
         self, blob_target_gas_per_block: U64
     ) -> None:
         """Append a `CodemodArgs` that sets `BLOB_TARGET_GAS_PER_BLOCK`."""
+        self._reject_legacy_blob_override("blob_target_gas_per_block")
         self.modifiers.append(
             SetConstant(
                 "vm.gas.GasCosts.BLOB_TARGET_GAS_PER_BLOCK",
@@ -517,6 +534,7 @@ class ForkBuilder:
 
     def modify_gas_per_blob(self, gas_per_blob: U64) -> None:
         """Append a `CodemodArgs` that sets `PER_BLOB`."""
+        self._reject_legacy_blob_override("gas_per_blob")
         self.modifiers.append(
             SetConstant(
                 "vm.gas.GasCosts.PER_BLOB",
@@ -526,6 +544,7 @@ class ForkBuilder:
 
     def modify_min_blob_gasprice(self, blob_min_gasprice: Uint) -> None:
         """Append a `CodemodArgs` that sets `BLOB_MIN_GASPRICE`."""
+        self._reject_legacy_blob_override("blob_min_gasprice")
         self.modifiers.append(
             SetConstant(
                 "vm.gas.GasCosts.BLOB_MIN_GASPRICE",
@@ -537,6 +556,7 @@ class ForkBuilder:
         self, blob_base_fee_update_fraction: Uint
     ) -> None:
         """Append a `CodemodArgs` that sets `BLOB_BASE_FEE_UPDATE_FRACTION`."""
+        self._reject_legacy_blob_override("blob_base_fee_update_fraction")
         self.modifiers.append(
             SetConstant(
                 "vm.gas.GasCosts.BLOB_BASE_FEE_UPDATE_FRACTION",
@@ -548,6 +568,7 @@ class ForkBuilder:
         self, max_blob_gas_per_block: U64
     ) -> None:
         """Append a `CodemodArgs` that sets `MAX_BLOB_GAS_PER_BLOCK`."""
+        self._reject_legacy_blob_override("max_blob_gas_per_block")
         self.modifiers.append(
             SetConstant(
                 "fork.MAX_BLOB_GAS_PER_BLOCK",
@@ -557,6 +578,7 @@ class ForkBuilder:
 
     def modify_blob_schedule_target(self, blob_schedule_target: U64) -> None:
         """Append a `CodemodArgs` that sets `BLOB_SCHEDULE_TARGET`."""
+        self._reject_legacy_blob_override("blob_schedule_target")
         self.modifiers.append(
             SetConstant(
                 "vm.gas.GasCosts.BLOB_SCHEDULE_TARGET",
@@ -566,6 +588,7 @@ class ForkBuilder:
 
     def modify_blob_schedule_max(self, blob_schedule_max: U64) -> None:
         """Append a `CodemodArgs` that sets `BLOB_SCHEDULE_MAX`."""
+        self._reject_legacy_blob_override("blob_schedule_max")
         self.modifiers.append(
             SetConstant(
                 "vm.gas.GasCosts.BLOB_SCHEDULE_MAX",

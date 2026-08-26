@@ -88,6 +88,14 @@ def _override_defaults(template: Hardfork) -> dict[str, U64 | Uint]:
     gas_mod = template.module("vm.gas")
     fork_mod = template.module("fork")
 
+    max_blob_gas_per_block = getattr(fork_mod, "MAX_BLOB_GAS_PER_BLOCK", None)
+    if max_blob_gas_per_block is None:
+        get_max_blob_gas_per_block = getattr(
+            fork_mod, "get_max_blob_gas_per_block", None
+        )
+        if get_max_blob_gas_per_block is not None:
+            max_blob_gas_per_block = get_max_blob_gas_per_block(U64(0))
+
     defaults: dict[str, U64 | Uint | None] = {
         "blob_target_gas_per_block": _gas_default(
             gas_mod,
@@ -99,11 +107,7 @@ def _override_defaults(template: Hardfork) -> dict[str, U64 | Uint]:
             gas_mod,
             "BLOB_BASE_FEE_UPDATE_FRACTION",
         ),
-        "max_blob_gas_per_block": getattr(
-            fork_mod,
-            "MAX_BLOB_GAS_PER_BLOCK",
-            None,
-        ),
+        "max_blob_gas_per_block": max_blob_gas_per_block,
         "blob_schedule_target": _gas_default(gas_mod, "BLOB_SCHEDULE_TARGET"),
         "blob_schedule_max": _gas_default(gas_mod, "BLOB_SCHEDULE_MAX"),
     }
@@ -248,6 +252,14 @@ def test_fork_cache_clones_for_each_changed_blob_override(
     assert fork is cloned
     assert seen["template"] is template
     assert getattr(_seen_overrides(seen), field) == changed_value
+
+
+def test_schedule_driven_clone_rejects_legacy_blob_override() -> None:
+    """Never create a clone whose fixed blob aliases lie about runtime."""
+    template = _template()
+    changed = ForkOverrides(blob_schedule_target=U64(13))
+    with pytest.raises(ValueError, match="SLOT_DURATION_SCHEDULE"):
+        Hardfork.clone(template=template, overrides=changed)
 
 
 def test_fork_cache_reuses_cached_clone_for_identical_changed_request(

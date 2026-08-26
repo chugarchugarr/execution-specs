@@ -42,10 +42,10 @@ class SlotDurationEntry:
 SlotDurationSchedule = Tuple[SlotDurationEntry, ...]
 
 
-# The Amsterdam execution package is activated at the EIP-8198 fork boundary,
-# so epoch zero here is relative to the package's active era. The pre-Amsterdam
-# parent remains represented by BASE_SLOT_DURATION_MS. Future duration changes
-# are additional entries; protocol logic does not change.
+# The epoch-zero entry is an always-active initial Amsterdam duration when this
+# fork package executes. Additional entries use consensus epoch numbers derived
+# from Header.slot_number. A future duration change is therefore schedule data;
+# protocol logic does not change.
 SLOT_DURATION_SCHEDULE: Final[SlotDurationSchedule] = (
     SlotDurationEntry(U64(0), Uint(10000)),
 )
