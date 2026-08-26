@@ -1,21 +1,26 @@
 """
-Prototype test for preserving fixed-gas call liveness across EIP-8038.
+Executable proof for preserving fixed-gas call liveness across EIP-8038.
 
-The test first proves the liveness regression independently of any proposed
-protocol change, then pins the conservation equation a write-prepayment remedy
-must satisfy:
+The fixture proves three legs with identical child bytecode:
 
-    child-frame charge + prepaid repricing delta
-        == Amsterdam child-frame charge
+    parent schedule PASS -> Amsterdam FAIL -> Amsterdam + voucher PASS
 
-A later commit replaces the algebraic voucher leg with executable Amsterdam
-semantics only after the regression itself survives the filler.
+The experimental voucher is encoded with three domain-separated EIP-2930
+storage-key markers. Their existing intrinsic charges move a bounded portion of
+the Amsterdam STORAGE_WRITE price outside the child frame. The remaining
+write charge stays inside the child. The core storage-access/write charge is
+conserved exactly; marker bytes add ordinary transaction-data overhead on top.
+
+This marker encoding is a proof vehicle, not a proposed final wire format.
 """
 
 import pytest
+from ethereum.crypto.hash import keccak256
+from ethereum_types.bytes import Bytes32
 from execution_testing import (
     AccessList,
     Account,
+    Address,
     Alloc,
     Block,
     BlockchainTestFiller,
@@ -31,6 +36,9 @@ REFERENCE_SPEC_VERSION = ref_spec_8038.version
 
 BEFORE_TS = 14_999
 AFTER_TS = 15_000
+VOUCHER_TS = 15_001
+WRITE_PREPAYMENT_DOMAIN = b"glamsterdam-write-prepayment-v1"
+WRITE_PREPAYMENT_MARKER_COUNT = 3
 
 pytestmark = pytest.mark.valid_at_transition_to("Amsterdam")
 
@@ -45,27 +53,36 @@ def _warm_existing_slot_write(fork: Fork):
     )(0, 2)
 
 
-def test_fixed_gas_sstore_liveness_regresses_at_amsterdam(
+def _write_prepayment_markers(address: Address, key: int) -> list[Bytes32]:
+    """Mirror the experimental Amsterdam marker derivation."""
+    key_bytes = Bytes32(key.to_bytes(32, "big"))
+    prefix = WRITE_PREPAYMENT_DOMAIN + bytes(address) + bytes(key_bytes)
+    return [
+        keccak256(prefix + bytes([index]))
+        for index in range(WRITE_PREPAYMENT_MARKER_COUNT)
+    ]
+
+
+def test_fixed_gas_sstore_liveness_and_write_prepayment(
     blockchain_test: BlockchainTestFiller,
     pre: Alloc,
     fork: Fork,
 ) -> None:
     """
-    A fixed child CALL budget can be live before Amsterdam and dead after it.
+    Prove parent PASS, Amsterdam FAIL, and Amsterdam+prepayment PASS.
 
-    Both children begin with slot 0 == 1 and execute identical bytecode that
-    changes the already-existing slot to 2. The access list pre-warms the slot,
-    removing cold-access and EIP-8037 state-creation confounders. The CALL gas
-    budget is chosen strictly between the pre- and post-fork execution costs.
+    All three children begin with slot 0 == 1 and execute identical bytecode
+    that changes the existing slot to 2. The target slot is access-listed in
+    every leg, removing cold-access and EIP-8037 state-creation confounders.
+    The CALL gas budget is strictly between the parent and Amsterdam execution
+    costs, so merely increasing outer transaction gas cannot fix the middle
+    leg.
 
-    The first block therefore commits the write. The second child runs out of
-    gas and rolls back the write even though the outer transaction has ample
-    gas. Increasing only outer transaction gas cannot alter the immutable CALL
-    operand.
-
-    The same fixture also proves the accounting invariant required by a later
-    voucher implementation: moving exactly the repricing delta outside the
-    child leaves the total Amsterdam execution charge unchanged.
+    In the voucher leg, three additional access-list storage keys pay their
+    existing intrinsic storage-key charges. Amsterdam consumes that prepayment
+    once and reduces only the frame-local STORAGE_WRITE charge by the same
+    amount. Thus the child fits the immutable CALL budget without reducing the
+    total core storage-access/write price.
     """
     before = fork.fork_at(timestamp=BEFORE_TS)
     after = fork.fork_at(timestamp=AFTER_TS)
@@ -78,16 +95,22 @@ def test_fixed_gas_sstore_liveness_regresses_at_amsterdam(
     fixed_child_gas = (cost_before + cost_after) // 2
     assert cost_before <= fixed_child_gas < cost_after
 
-    # Conservation gate for the future voucher implementation.
-    prepaid_repricing_delta = cost_after - cost_before
-    voucher_frame_charge = cost_after - prepaid_repricing_delta
-    assert prepaid_repricing_delta > 0
-    assert voucher_frame_charge == cost_before
+    # One EIP-2930 storage-key prepayment equals cold minus warm SLOAD.
+    storage_key_prepayment = Op.SLOAD(key_warm=False).gas_cost(
+        after
+    ) - Op.SLOAD(key_warm=True).gas_cost(after)
+    marker_prepayment = storage_key_prepayment * WRITE_PREPAYMENT_MARKER_COUNT
+    voucher_frame_charge = cost_after - marker_prepayment
+
+    assert marker_prepayment > 0
     assert voucher_frame_charge <= fixed_child_gas
-    assert voucher_frame_charge + prepaid_repricing_delta == cost_after
+    # Core conservation: the amount removed from the child is exactly the
+    # amount already paid by the three marker-key intrinsic charges.
+    assert voucher_frame_charge + marker_prepayment == cost_after
 
     child_before = pre.deploy_contract(code=Op.SSTORE(0, 2), storage={0: 1})
     child_after = pre.deploy_contract(code=Op.SSTORE(0, 2), storage={0: 1})
+    child_voucher = pre.deploy_contract(code=Op.SSTORE(0, 2), storage={0: 1})
 
     parent_before = pre.deploy_contract(
         code=Op.POP(Op.CALL(gas=fixed_child_gas, address=child_before))
@@ -95,6 +118,11 @@ def test_fixed_gas_sstore_liveness_regresses_at_amsterdam(
     parent_after = pre.deploy_contract(
         code=Op.POP(Op.CALL(gas=fixed_child_gas, address=child_after))
     )
+    parent_voucher = pre.deploy_contract(
+        code=Op.POP(Op.CALL(gas=fixed_child_gas, address=child_voucher))
+    )
+
+    voucher_keys = [0, *_write_prepayment_markers(child_voucher, 0)]
 
     blocks = [
         Block(
@@ -121,10 +149,23 @@ def test_fixed_gas_sstore_liveness_regresses_at_amsterdam(
                 )
             ],
         ),
+        Block(
+            timestamp=VOUCHER_TS,
+            txs=[
+                Transaction(
+                    to=parent_voucher,
+                    sender=pre.fund_eoa(),
+                    access_list=[
+                        AccessList(address=child_voucher, storage_keys=voucher_keys)
+                    ],
+                )
+            ],
+        ),
     ]
 
     post = {
         child_before: Account(storage={0: 2}),
         child_after: Account(storage={0: 1}),
+        child_voucher: Account(storage={0: 2}),
     }
     blockchain_test(pre=pre, blocks=blocks, post=post)
