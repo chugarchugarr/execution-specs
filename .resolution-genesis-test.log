@@ -3,25 +3,24 @@ Creating virtual environment at: .venv
    Building ethereum-execution-testing @ file:///home/runner/work/execution-specs/execution-specs/packages/testing
    Building ethereum-execution @ file:///home/runner/work/execution-specs/execution-specs
 Downloading pygments (1.2MiB)
-Downloading spec256k1 (1.4MiB)
-Downloading selectolax (2.2MiB)
+Downloading babel (9.7MiB)
 Downloading cryptography (4.3MiB)
-Downloading lxml (5.0MiB)
-Downloading libcst (2.2MiB)
-Downloading pillow (6.7MiB)
 Downloading pydantic-core (2.0MiB)
+Downloading pycryptodome (2.2MiB)
 Downloading mypy (14.4MiB)
 Downloading ruff (12.7MiB)
-Downloading ast-serialize (1.2MiB)
-Downloading babel (9.7MiB)
-Downloading pycryptodome (2.2MiB)
-Downloading mkdocs (3.7MiB)
-Downloading shellcheck-py (3.6MiB)
-Downloading cytoolz (2.7MiB)
+Downloading selectolax (2.2MiB)
 Downloading mkdocs-material (8.8MiB)
+Downloading spec256k1 (1.4MiB)
+Downloading libcst (2.2MiB)
+Downloading shellcheck-py (3.6MiB)
+Downloading mkdocs (3.7MiB)
+Downloading lxml (5.0MiB)
+Downloading pillow (6.7MiB)
+Downloading ast-serialize (1.2MiB)
+Downloading cytoolz (2.7MiB)
  Downloaded ast-serialize
  Downloaded spec256k1
-   Building actionlint-py==1.7.11.24
  Downloaded pydantic-core
  Downloaded selectolax
  Downloaded cytoolz
@@ -29,8 +28,8 @@ Downloading mkdocs-material (8.8MiB)
  Downloaded pygments
  Downloaded mkdocs
  Downloaded pycryptodome
- Downloaded libcst
  Downloaded cryptography
+ Downloaded libcst
  Downloaded pillow
  Downloaded lxml
  Downloaded ruff
@@ -38,42 +37,8 @@ Downloading mkdocs-material (8.8MiB)
  Downloaded mypy
       Built ethereum-execution @ file:///home/runner/work/execution-specs/execution-specs
       Built ethereum-execution-testing @ file:///home/runner/work/execution-specs/execution-specs/packages/testing
-      Built actionlint-py==1.7.11.24
  Downloaded mkdocs-material
-Installed 139 packages in 382ms
+Installed 139 packages in 384ms
  pytest-regex selected 2 tests to run for regex: .*
-.F                                                                        [2/2]
-=================================== FAILURES ===================================
-____________ test_binary_tree_genesis_seeds_alloc_state_commitment _____________
-
-    def test_binary_tree_genesis_seeds_alloc_state_commitment() -> None:
-        """Genesis hashing must use the provider selected by the active fork."""
-        address = Address(0x100)
-        alloc = Alloc({address: Account(balance=1, storage={0: 1})})
->       mpt_root = alloc.state_root()
-                   ^^^^^^^^^^^^^^^^^^
-
-packages/testing/src/execution_testing/cli/pytest_commands/plugins/execute/eth_config/tests/test_genesis.py:155: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-packages/testing/src/execution_testing/test_types/account_types.py:317: in state_root
-    return Hash(self._state_module().state_root(self._materialize_state()))
-                ^^^^^^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-self = Alloc(root={b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00': Account(nonce=0, balance=1, code=b'', storage=Storage(root={0: 1}))})
-
-    def _state_module(self) -> ModuleType:
-        """
-        Return the spec state module implementing `self._state_commitment`.
-        """
-        if self._state_commitment is None:
->           raise ValueError(
-                "Alloc state commitment is unset; seed it from the "
-                "accompanying fork."
-            )
-E           ValueError: Alloc state commitment is unset; seed it from the accompanying fork.
-
-packages/testing/src/execution_testing/test_types/account_types.py:379: ValueError
-=========================== short test summary info ============================
-FAILED packages/testing/src/execution_testing/cli/pytest_commands/plugins/execute/eth_config/tests/test_genesis.py::test_binary_tree_genesis_seeds_alloc_state_commitment - ValueError: Alloc state commitment is unset; seed it from the accompanying fork.
-1 failed, 1 passed in 0.22s
+..                                                                        [2/2]
+2 passed in 0.15s

@@ -12,6 +12,7 @@ from execution_testing.forks import (
     BPO3,
     BPO4,
     BPO5,
+    Amsterdam,
     Berlin,
     BinaryTree,
     Byzantium,
@@ -152,7 +153,9 @@ def test_binary_tree_genesis_seeds_alloc_state_commitment() -> None:
     """Genesis hashing must use the provider selected by the active fork."""
     address = Address(0x100)
     alloc = Alloc({address: Account(balance=1, storage={0: 1})})
-    mpt_root = alloc.state_root()
+    mpt_alloc = alloc.model_copy(deep=True)
+    mpt_alloc.migrate_state_commitment(Amsterdam.state_commitment())
+    mpt_root = mpt_alloc.state_root()
 
     genesis = Genesis(
         config=GenesisConfig(
@@ -176,4 +179,4 @@ def test_binary_tree_genesis_seeds_alloc_state_commitment() -> None:
     assert genesis.config.fork() is BinaryTree
     assert genesis.alloc.state_commitment() == BinaryTree.state_commitment()
     assert genesis.alloc.state_root() != mpt_root
-    assert genesis.hash == genesis.hash
+    _ = genesis.hash
