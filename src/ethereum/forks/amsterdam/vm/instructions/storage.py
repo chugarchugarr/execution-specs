@@ -11,9 +11,10 @@ Introduction
 Implementations of the EVM storage related instructions.
 """
 
-from ethereum.crypto.hash import keccak256
 from ethereum_types.bytes import Bytes32
 from ethereum_types.numeric import Uint
+
+from ethereum.crypto.hash import keccak256
 
 from ...fork_types import ExecutionGas, StateGas
 from ...state_tracker import (
@@ -158,8 +159,9 @@ def sstore(evm: Evm) -> None:
     # Write cost: charged on the first change to the slot this transaction.
     if original_value == current_value and current_value != new_value:
         if _consume_write_prepayment(evm, key):
-            prepaid = GasCosts.TX_ACCESS_LIST_STORAGE_KEY * Uint(
-                _WRITE_PREPAYMENT_MARKER_COUNT
+            prepaid = ExecutionGas(
+                GasCosts.TX_ACCESS_LIST_STORAGE_KEY
+                * Uint(_WRITE_PREPAYMENT_MARKER_COUNT)
             )
             gas_cost += GasCosts.STORAGE_WRITE - prepaid
         else:
