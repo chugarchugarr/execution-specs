@@ -21,7 +21,7 @@ jobs:
           python-version: '3.12'
           enable-cache: true
 
-      - name: Add provider-specific genesis regression
+      - name: Refine provider-specific genesis regression
         shell: bash
         run: |
           python - <<'PY'
@@ -29,22 +29,22 @@ jobs:
 
           path = Path("packages/testing/src/execution_testing/cli/pytest_commands/plugins/execute/eth_config/tests/test_genesis.py")
           text = path.read_text()
+          if "    Amsterdam,\n" not in text:
+              text = text.replace(
+                  "    BPO5,\n    Berlin,\n",
+                  "    BPO5,\n    Amsterdam,\n    Berlin,\n",
+                  1,
+              )
           text = text.replace(
-              "from execution_testing.base_types import Hash\n",
-              "from execution_testing.base_types import Account, Address, Hash\n",
+              "    alloc = Alloc({address: Account(balance=1, storage={0: 1})})\n    mpt_root = alloc.state_root()\n",
+              "    alloc = Alloc({address: Account(balance=1, storage={0: 1})})\n    mpt_alloc = alloc.model_copy(deep=True)\n    mpt_alloc.migrate_state_commitment(Amsterdam.state_commitment())\n    mpt_root = mpt_alloc.state_root()\n",
               1,
           )
           text = text.replace(
-              "    BPO5,\n    Berlin,\n",
-              "    BPO5,\n    Berlin,\n    BinaryTree,\n",
+              "    assert genesis.alloc.state_root() != mpt_root\n    assert genesis.hash == genesis.hash\n",
+              "    assert genesis.alloc.state_root() != mpt_root\n    _ = genesis.hash\n",
               1,
           )
-          text = text.replace(
-              "from execution_testing.rpc import (\n    ForkConfigBlobSchedule,\n)\n\nfrom ..execute_types import ForkActivationTimes, Genesis, NetworkConfig\n",
-              "from execution_testing.rpc import (\n    ForkConfigBlobSchedule,\n)\nfrom execution_testing.test_types import Alloc\n\nfrom ..execute_types import (\n    ForkActivationTimes,\n    Genesis,\n    GenesisConfig,\n    NetworkConfig,\n)\n",
-              1,
-          )
-          text += '''\n\ndef test_binary_tree_genesis_seeds_alloc_state_commitment() -> None:\n    \"\"\"Genesis hashing must use the provider selected by the active fork.\"\"\"\n    address = Address(0x100)\n    alloc = Alloc({address: Account(balance=1, storage={0: 1})})\n    mpt_root = alloc.state_root()\n\n    genesis = Genesis(\n        config=GenesisConfig(\n            chain_id=1,\n            terminal_total_difficulty=0,\n            terminal_total_difficulty_passed=True,\n            fork_activation_times=ForkActivationTimes(root={BinaryTree: 0}),\n            blob_schedule={},\n        ),\n        alloc=alloc,\n        fee_recipient=Address(0),\n        difficulty=0,\n        extra_data=b\"\",\n        gas_limit=30_000_000,\n        nonce=0,\n        mixhash=Hash(0),\n        timestamp=0,\n        parent_hash=Hash(0),\n    )\n\n    assert genesis.config.fork() is BinaryTree\n    assert genesis.alloc.state_commitment() == BinaryTree.state_commitment()\n    assert genesis.alloc.state_root() != mpt_root\n    assert genesis.hash == genesis.hash\n'''
           path.write_text(text)
           PY
           git diff --check
@@ -65,5 +65,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add packages/testing/src/execution_testing/cli/pytest_commands/plugins/execute/eth_config/tests/test_genesis.py
           git add -f .resolution-genesis-test.log .resolution-genesis-test.status
-          git commit -m "test(binary-trie): probe provider-aware genesis hashing"
+          git commit -m "test(binary-trie): validate provider-aware genesis hashing"
           git push origin HEAD:test/genesis-provider-commitment
