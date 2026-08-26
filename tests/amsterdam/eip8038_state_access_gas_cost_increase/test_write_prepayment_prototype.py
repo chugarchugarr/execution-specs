@@ -1,7 +1,7 @@
 """
 Executable proof for preserving fixed-gas call liveness across EIP-8038.
 
-The fixture proves three legs with identical child bytecode:
+The primary fixture proves three legs with identical child bytecode:
 
     parent schedule PASS -> Amsterdam FAIL -> Amsterdam + voucher PASS
 
@@ -10,6 +10,10 @@ storage-key markers. Their existing intrinsic charges move a bounded portion of
 the Amsterdam STORAGE_WRITE price outside the child frame. The remaining
 write charge stays inside the child. The core storage-access/write charge is
 conserved exactly; marker bytes add ordinary transaction-data overhead on top.
+
+Additional fixtures contain the proof mechanism: partial marker sets do not
+activate it, an OOG attempt consumes the prepaid credit instead of making it
+replayable, and ordinary Amsterdam writes retain their normal semantics.
 
 This marker encoding is a proof vehicle, not a proposed final wire format.
 """
@@ -61,6 +65,22 @@ def _write_prepayment_markers(address: Address, key: int) -> list[Bytes32]:
         keccak256(prefix + bytes([index]))
         for index in range(WRITE_PREPAYMENT_MARKER_COUNT)
     ]
+
+
+def _fixed_gas_window(fork: Fork) -> tuple[int, int, int, int]:
+    """Return parent cost, Amsterdam cost, voucher cost, and fixed budget."""
+    before = fork.fork_at(timestamp=BEFORE_TS)
+    after = fork.fork_at(timestamp=AFTER_TS)
+    write = _warm_existing_slot_write(fork)
+    cost_before = write.execution_cost(before)
+    cost_after = write.execution_cost(after)
+    storage_key_prepayment = Op.SLOAD(key_warm=False).gas_cost(
+        after
+    ) - Op.SLOAD(key_warm=True).gas_cost(after)
+    marker_prepayment = storage_key_prepayment * WRITE_PREPAYMENT_MARKER_COUNT
+    voucher_frame_charge = cost_after - marker_prepayment
+    fixed_child_gas = (cost_before + cost_after) // 2
+    return cost_before, cost_after, voucher_frame_charge, fixed_child_gas
 
 
 def test_fixed_gas_sstore_liveness_and_write_prepayment(
@@ -168,4 +188,118 @@ def test_fixed_gas_sstore_liveness_and_write_prepayment(
         child_after: Account(storage={0: 1}),
         child_voucher: Account(storage={0: 2}),
     }
+    blockchain_test(pre=pre, blocks=blocks, post=post)
+
+
+def test_partial_write_prepayment_does_not_discount(
+    blockchain_test: BlockchainTestFiller,
+    pre: Alloc,
+    fork: Fork,
+) -> None:
+    """Two of the three markers are insufficient to rescue the fixed call."""
+    _, cost_after, _, fixed_child_gas = _fixed_gas_window(fork)
+    assert fixed_child_gas < cost_after
+
+    child = pre.deploy_contract(code=Op.SSTORE(0, 2), storage={0: 1})
+    parent = pre.deploy_contract(
+        code=Op.POP(Op.CALL(gas=fixed_child_gas, address=child))
+    )
+    markers = _write_prepayment_markers(child, 0)
+
+    blocks = [
+        Block(
+            timestamp=AFTER_TS,
+            txs=[
+                Transaction(
+                    to=parent,
+                    sender=pre.fund_eoa(),
+                    access_list=[
+                        AccessList(address=child, storage_keys=[0, *markers[:2]])
+                    ],
+                )
+            ],
+        )
+    ]
+
+    post = {child: Account(storage={0: 1})}
+    blockchain_test(pre=pre, blocks=blocks, post=post)
+
+
+def test_write_prepayment_is_not_replayable_after_oog(
+    blockchain_test: BlockchainTestFiller,
+    pre: Alloc,
+    fork: Fork,
+) -> None:
+    """
+    An OOG attempt burns its prepaid write credit transaction-wide.
+
+    The first call has one gas less than the discounted frame requires. The
+    SSTORE recognizes and consumes the marker set, then fails its gas charge.
+    A second call in the same transaction has enough gas for the discounted
+    write but not the ordinary Amsterdam write. It must still fail; otherwise
+    one intrinsic prepayment could subsidize arbitrarily many retrying frames.
+    """
+    _, cost_after, voucher_frame_charge, fixed_child_gas = _fixed_gas_window(
+        fork
+    )
+    assert voucher_frame_charge > 2_301
+    first_attempt_gas = voucher_frame_charge - 1
+    assert first_attempt_gas < voucher_frame_charge <= fixed_child_gas
+    assert fixed_child_gas < cost_after
+
+    child = pre.deploy_contract(code=Op.SSTORE(0, 2), storage={0: 1})
+    parent = pre.deploy_contract(
+        code=(
+            Op.POP(Op.CALL(gas=first_attempt_gas, address=child))
+            + Op.POP(Op.CALL(gas=fixed_child_gas, address=child))
+        )
+    )
+    voucher_keys = [0, *_write_prepayment_markers(child, 0)]
+
+    blocks = [
+        Block(
+            timestamp=AFTER_TS,
+            txs=[
+                Transaction(
+                    to=parent,
+                    sender=pre.fund_eoa(),
+                    access_list=[
+                        AccessList(address=child, storage_keys=voucher_keys)
+                    ],
+                )
+            ],
+        )
+    ]
+
+    post = {child: Account(storage={0: 1})}
+    blockchain_test(pre=pre, blocks=blocks, post=post)
+
+
+def test_ordinary_amsterdam_sstore_remains_unchanged(
+    blockchain_test: BlockchainTestFiller,
+    pre: Alloc,
+    fork: Fork,
+) -> None:
+    """Without marker keys, an adequately funded Amsterdam write still works."""
+    _, cost_after, _, _ = _fixed_gas_window(fork)
+
+    child = pre.deploy_contract(code=Op.SSTORE(0, 2), storage={0: 1})
+    parent = pre.deploy_contract(
+        code=Op.POP(Op.CALL(gas=cost_after + 10_000, address=child))
+    )
+
+    blocks = [
+        Block(
+            timestamp=AFTER_TS,
+            txs=[
+                Transaction(
+                    to=parent,
+                    sender=pre.fund_eoa(),
+                    access_list=[AccessList(address=child, storage_keys=[0])],
+                )
+            ],
+        )
+    ]
+
+    post = {child: Account(storage={0: 2})}
     blockchain_test(pre=pre, blocks=blocks, post=post)
