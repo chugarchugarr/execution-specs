@@ -44,20 +44,25 @@ jobs:
               "from execution_testing.rpc import (\n    ForkConfigBlobSchedule,\n)\nfrom execution_testing.test_types import Alloc\n\nfrom ..execute_types import (\n    ForkActivationTimes,\n    Genesis,\n    GenesisConfig,\n    NetworkConfig,\n)\n",
               1,
           )
-          text += '''\n\ndef test_binary_tree_genesis_seeds_alloc_state_commitment() -> None:\n    \"\"\"Genesis hashing must use the provider selected by the active fork.\"\"\"\n    address = Address(0x100)\n    alloc = Alloc({address: Account(balance=1, storage={0: 1})})\n    mpt_root = alloc.state_root()\n\n    genesis = Genesis(\n        config=GenesisConfig(\n            chain_id=1,\n            terminal_total_difficulty=0,\n            terminal_total_difficulty_passed=True,\n            fork_activation_times=ForkActivationTimes(root={BinaryTree: 0}),\n            blob_schedule={},\n        ),\n        alloc=alloc,\n        fee_recipient=Address(0),\n        difficulty=0,\n        extra_data=b\"\",\n        gas_limit=30_000_000,\n        nonce=0,\n        mixhash=Hash(0),\n        timestamp=0,\n        parent_hash=Hash(0),\n    )\n\n    assert genesis.config.fork() is BinaryTree\n    assert genesis.alloc.state_commitment() == BinaryTree.state_commitment()\n    assert genesis.alloc.state_root() != mpt_root\n    # Force the cached property: the provider-aware root must be usable by the\n    # actual genesis-hash path, not merely carried as metadata on the alloc.\n    assert genesis.hash == genesis.hash\n'''
+          text += '''\n\ndef test_binary_tree_genesis_seeds_alloc_state_commitment() -> None:\n    \"\"\"Genesis hashing must use the provider selected by the active fork.\"\"\"\n    address = Address(0x100)\n    alloc = Alloc({address: Account(balance=1, storage={0: 1})})\n    mpt_root = alloc.state_root()\n\n    genesis = Genesis(\n        config=GenesisConfig(\n            chain_id=1,\n            terminal_total_difficulty=0,\n            terminal_total_difficulty_passed=True,\n            fork_activation_times=ForkActivationTimes(root={BinaryTree: 0}),\n            blob_schedule={},\n        ),\n        alloc=alloc,\n        fee_recipient=Address(0),\n        difficulty=0,\n        extra_data=b\"\",\n        gas_limit=30_000_000,\n        nonce=0,\n        mixhash=Hash(0),\n        timestamp=0,\n        parent_hash=Hash(0),\n    )\n\n    assert genesis.config.fork() is BinaryTree\n    assert genesis.alloc.state_commitment() == BinaryTree.state_commitment()\n    assert genesis.alloc.state_root() != mpt_root\n    assert genesis.hash == genesis.hash\n'''
           path.write_text(text)
           PY
           git diff --check
 
-      - name: Run focused regression
+      - name: Run focused regression and capture output
         shell: bash
-        run: uv run pytest packages/testing/src/execution_testing/cli/pytest_commands/plugins/execute/eth_config/tests/test_genesis.py -q
+        run: |
+          set +e
+          uv run pytest packages/testing/src/execution_testing/cli/pytest_commands/plugins/execute/eth_config/tests/test_genesis.py -q > .resolution-genesis-test.log 2>&1
+          echo $? > .resolution-genesis-test.status
+          cat .resolution-genesis-test.log
+          exit 0
 
-      - name: Commit tested patch
+      - name: Commit diagnostic state
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add packages/testing/src/execution_testing/cli/pytest_commands/plugins/execute/eth_config/tests/test_genesis.py
-          git commit -m "test(binary-trie): pin provider-aware genesis hashing"
+          git add packages/testing/src/execution_testing/cli/pytest_commands/plugins/execute/eth_config/tests/test_genesis.py .resolution-genesis-test.log .resolution-genesis-test.status
+          git commit -m "test(binary-trie): probe provider-aware genesis hashing"
           git push origin HEAD:test/genesis-provider-commitment
