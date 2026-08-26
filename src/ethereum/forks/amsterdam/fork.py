@@ -271,7 +271,9 @@ def get_max_blob_gas_per_block(
     slot_number: U64,
     slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
 ) -> U64:
-    """Return the current per-block blob capacity from the duration schedule."""
+    """
+    Return the current per-block blob capacity from the duration schedule.
+    """
     return BLOB_GAS_PER_BLOB * get_blob_schedule(
         slot_number, slot_duration_schedule
     ).maximum
@@ -325,10 +327,12 @@ def calculate_data_fee_for_slot(
     slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
 ) -> Uint:
     """Calculate the blob data fee using the current slot-duration era."""
-    return Uint(calculate_total_blob_gas(tx)) * calculate_blob_gas_price_for_slot(
-        excess_blob_gas,
-        slot_number,
-        slot_duration_schedule,
+    return Uint(calculate_total_blob_gas(tx)) * (
+        calculate_blob_gas_price_for_slot(
+            excess_blob_gas,
+            slot_number,
+            slot_duration_schedule,
+        )
     )
 
 
@@ -340,7 +344,8 @@ def calculate_base_fee_per_gas(
     gas_limit_reference: Optional[Uint] = None,
     slot_duration_ms: Optional[Uint] = None,
 ) -> Uint:
-    """Calculate base fee while preserving responsiveness per wall-clock time.
+    """
+    Calculate base fee while preserving responsiveness per wall-clock time.
 
     ``gas_limit_reference`` is transition-scoped and may use the current/parent
     duration ratio. ``slot_duration_ms`` is era-scoped and is always compared
@@ -594,7 +599,8 @@ def process_checked_system_transaction(
 
     if len(system_contract_code) == 0:
         raise InvalidBlock(
-            f"System contract address {target_address.hex()} does not contain code"
+            f"System contract address {target_address.hex()} "
+            "does not contain code"
         )
 
     system_tx_output = process_unchecked_system_transaction(
@@ -760,7 +766,8 @@ def process_general_purpose_requests(
     )
     if len(system_builder_exit_tx_output.return_data) > 0:
         requests_from_execution.append(
-            BUILDER_EXIT_REQUEST_TYPE + system_builder_exit_tx_output.return_data
+            BUILDER_EXIT_REQUEST_TYPE
+            + system_builder_exit_tx_output.return_data
         )
 
 
