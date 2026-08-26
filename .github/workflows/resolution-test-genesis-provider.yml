@@ -63,6 +63,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add packages/testing/src/execution_testing/cli/pytest_commands/plugins/execute/eth_config/tests/test_genesis.py .resolution-genesis-test.log .resolution-genesis-test.status
+          git add packages/testing/src/execution_testing/cli/pytest_commands/plugins/execute/eth_config/tests/test_genesis.py
+          git add -f .resolution-genesis-test.log .resolution-genesis-test.status
           git commit -m "test(binary-trie): probe provider-aware genesis hashing"
           git push origin HEAD:test/genesis-provider-commitment
