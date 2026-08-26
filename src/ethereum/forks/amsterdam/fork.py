@@ -274,9 +274,10 @@ def get_max_blob_gas_per_block(
     """
     Return the current per-block blob capacity from the duration schedule.
     """
-    return BLOB_GAS_PER_BLOB * get_blob_schedule(
-        slot_number, slot_duration_schedule
-    ).maximum
+    return (
+        BLOB_GAS_PER_BLOB
+        * get_blob_schedule(slot_number, slot_duration_schedule).maximum
+    )
 
 
 def calculate_excess_blob_gas_for_slot(
