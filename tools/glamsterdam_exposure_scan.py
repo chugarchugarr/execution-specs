@@ -16,9 +16,11 @@ The scanner deliberately separates three claims:
 3. a statically resolved callee is present in the same dataset and contains an
    SSTORE opcode outside PUSH data.
 
-Only (3) is labelled ``static_high``. Even that is a candidate, not proof that
-an on-chain execution reaches the SSTORE with the measured remaining gas.
-Trace replay is the next verification boundary.
+Only (3) is labelled ``static_high``. Calls to Amsterdam precompiles are
+explicitly excluded because native precompile execution cannot execute SSTORE.
+Even ``static_high`` is a candidate, not proof that an on-chain execution
+reaches the SSTORE with the measured remaining gas. Trace replay is the next
+verification boundary.
 """
 
 from __future__ import annotations
@@ -26,9 +28,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
+
+from ethereum.forks.amsterdam.vm.precompiled_contracts.mapping import (
+    PRE_COMPILED_CONTRACTS,
+)
 
 OSAKA_WARM_EXISTING_WRITE = 2_900
 AMSTERDAM_WARM_EXISTING_WRITE = 10_100
@@ -74,6 +80,14 @@ def normalize_address(value: str) -> str:
         raise ValueError(f"address longer than 20 bytes: {value}")
     int(raw or "0", 16)
     return "0x" + raw.rjust(40, "0")
+
+
+def amsterdam_precompile_addresses() -> set[str]:
+    """Return precompile addresses from the pinned Amsterdam specification."""
+    return {
+        normalize_address(bytes(address).hex())
+        for address in PRE_COMPILED_CONTRACTS
+    }
 
 
 def decode_hex(value: str) -> bytes:
@@ -301,20 +315,25 @@ def load_records(path: Path) -> list[dict[str, Any]]:
 def classify(records: Iterable[dict[str, Any]]) -> list[CallSite]:
     rows = list(records)
     by_address = {row["address"]: row for row in rows}
+    precompiles = amsterdam_precompile_addresses()
     sites: list[CallSite] = []
 
     for row in rows:
         for raw in recover_fixed_calls(row["address"], row["_code"]):
             window = _window(raw["gas"])
             target = raw["target"]
+            is_precompile = target in precompiles if target is not None else False
             target_record = by_address.get(target) if target else None
-            has_sstore = (
-                contains_sstore(target_record["_code"])
-                if target_record is not None
-                else None
-            )
+            if is_precompile:
+                has_sstore: bool | None = False
+            elif target_record is not None:
+                has_sstore = contains_sstore(target_record["_code"])
+            else:
+                has_sstore = None
 
-            if window == "repricing_window" and has_sstore is True:
+            if window == "repricing_window" and is_precompile:
+                classification = "direct_window_precompile"
+            elif window == "repricing_window" and has_sstore is True:
                 classification = "static_high"
             elif window == "repricing_window" and target_record is None:
                 classification = "direct_window_unresolved"
@@ -361,6 +380,9 @@ def summarize(records: list[dict[str, Any]], sites: list[CallSite]) -> dict[str,
         "fixed_call_sites": len(sites),
         "repricing_window_sites": sum(
             site.window == "repricing_window" for site in sites
+        ),
+        "precompile_direct_window_sites": sum(
+            site.classification == "direct_window_precompile" for site in sites
         ),
         "static_high_sites": sum(
             site.classification == "static_high" for site in sites
