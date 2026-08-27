@@ -15,4 +15,6 @@ jobs:
         with:
           python-version: "3.14"
       - name: Run scanner unit tests
+        env:
+          PYTHONPATH: .
         run: uv run pytest -q tests/tools/test_glamsterdam_exposure_scan.py
