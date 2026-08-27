@@ -23,8 +23,8 @@ jobs:
       - name: Verify tested commit
         run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
 
-  targeted-runtime:
-    name: EIP-8198 10s-to-6s runtime proof
+  spec-tools:
+    name: EIP-8198 spec-tools proof
     runs-on: ubuntu-latest
     needs: provenance
     timeout-minutes: 30
@@ -35,8 +35,10 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.14"
-      - name: Run exact EIP-8198 composability suite
-        run: uv run pytest -q tests/evm_tools/eip8198_quick_slots
+      - name: Run repository spec-tools suite including EIP-8198 tests
+        run: just spec-tools
+        env:
+          PYTEST_XDIST_AUTO_NUM_WORKERS: "2"
 
   proof-green:
     name: Exact 10s-to-6s proof green
@@ -44,15 +46,15 @@ jobs:
     if: always()
     needs:
       - provenance
-      - targeted-runtime
+      - spec-tools
     steps:
       - name: Require exact-head proof to pass
         env:
           PROVENANCE: ${{ needs.provenance.result }}
-          TARGETED_RUNTIME: ${{ needs.targeted-runtime.result }}
+          SPEC_TOOLS: ${{ needs.spec-tools.result }}
         run: |
           printf '%s\n' \
             "provenance=$PROVENANCE" \
-            "targeted-runtime=$TARGETED_RUNTIME"
+            "spec-tools=$SPEC_TOOLS"
           test "$PROVENANCE" = success
-          test "$TARGETED_RUNTIME" = success
+          test "$SPEC_TOOLS" = success
