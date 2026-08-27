@@ -1,4 +1,4 @@
-name: EIP-8198 10s-to-6s exact-head proof
+name: EIP-8198 schedule-driven exact-head proof
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  TARGET_SHA: 577ff91d14e80b4289347db1eed64501841c8b02
+  TARGET_SHA: 396028d1a1b39f238836f152710dfdbc04b98fdf
 
 jobs:
   provenance:
@@ -41,7 +41,7 @@ jobs:
           PYTEST_XDIST_AUTO_NUM_WORKERS: "2"
 
   proof-green:
-    name: Exact 10s-to-6s proof green
+    name: Exact EIP-8198 proof green
     runs-on: ubuntu-latest
     if: always()
     needs:
