@@ -52,3 +52,16 @@ jobs:
           uv run python tools/glamsterdam_exposure_scan.py
           .just/cgt-mainnet.ndjson
           --sites .just/cgt-call-sites.csv
+      - name: Print repricing-window candidate rows
+        run: |
+          python - <<'PY'
+          import csv
+          import json
+
+          with open('.just/cgt-call-sites.csv', newline='', encoding='utf-8') as handle:
+              rows = [
+                  row for row in csv.DictReader(handle)
+                  if row['window'] == 'repricing_window'
+              ]
+          print(json.dumps(rows, indent=2, sort_keys=True))
+          PY
