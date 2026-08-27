@@ -32,6 +32,7 @@ from typing import Any, Iterable
 
 OSAKA_WARM_EXISTING_WRITE = 2_900
 AMSTERDAM_WARM_EXISTING_WRITE = 10_100
+UINT256_MASK = (1 << 256) - 1
 UNKNOWN = object()
 
 
@@ -116,11 +117,25 @@ def const_binary(stack: list[Any], fn: Any) -> None:
     b = pop(stack)
     if isinstance(a, int) and isinstance(b, int):
         try:
-            stack.append(fn(a, b) & ((1 << 256) - 1))
-        except (ZeroDivisionError, ValueError, OverflowError):
+            stack.append(fn(a, b) & UINT256_MASK)
+        except (ZeroDivisionError, ValueError, OverflowError, MemoryError):
             stack.append(UNKNOWN)
     else:
         stack.append(UNKNOWN)
+
+
+def evm_shl(shift: int, value: int) -> int:
+    """EIP-145 SHL semantics without allocating enormous Python integers."""
+    if shift >= 256:
+        return 0
+    return (value << shift) & UINT256_MASK
+
+
+def evm_shr(shift: int, value: int) -> int:
+    """EIP-145 SHR semantics."""
+    if shift >= 256:
+        return 0
+    return value >> shift
 
 
 def stack_effect(opcode: int) -> tuple[int, int] | None:
@@ -245,10 +260,10 @@ def recover_fixed_calls(address: str, code: bytes) -> list[dict[str, Any]]:
             const_binary(stack, lambda a, b: b ^ a)
             continue
         if opcode == 0x1B:
-            const_binary(stack, lambda a, b: b << a)
+            const_binary(stack, evm_shl)
             continue
         if opcode == 0x1C:
-            const_binary(stack, lambda a, b: b >> a)
+            const_binary(stack, evm_shr)
             continue
 
         effect = stack_effect(opcode)
