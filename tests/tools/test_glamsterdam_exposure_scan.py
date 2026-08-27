@@ -35,7 +35,7 @@ def test_push_immediate_55_is_not_sstore() -> None:
 
 
 def test_oversized_shl_follows_evm_semantics_without_allocating() -> None:
-    caller = normalize_address("0x1")
+    caller = normalize_address("0x100")
     huge_shift = "ff" * 32
     # PUSH1 1; PUSH32 (2**256-1); SHL; STOP. EIP-145 defines this as zero.
     code = decode_hex("0x60017f" + huge_shift + "1b00")
@@ -43,18 +43,32 @@ def test_oversized_shl_follows_evm_semantics_without_allocating() -> None:
 
 
 def test_fixed_call_in_repricing_window_is_recovered() -> None:
-    caller = normalize_address("0x1")
-    calls = recover_fixed_calls(caller, decode_hex(_fixed_call(2, 5_000)))
+    caller = normalize_address("0x101")
+    calls = recover_fixed_calls(caller, decode_hex(_fixed_call(0x200, 5_000)))
     assert len(calls) == 1
     assert calls[0]["gas"] == 5_000
-    assert calls[0]["target"] == normalize_address("0x2")
+    assert calls[0]["target"] == normalize_address("0x200")
     assert calls[0]["value"] == 0
+
+
+def test_amsterdam_precompile_is_not_sstore_exposure() -> None:
+    records = [_record(0x101, _fixed_call(0x01, 3_000))]
+    sites = classify(records)
+    assert len(sites) == 1
+    assert sites[0].window == "repricing_window"
+    assert sites[0].target == normalize_address("0x01")
+    assert sites[0].callee_has_sstore is False
+    assert sites[0].classification == "direct_window_precompile"
+
+    report = summarize(records, sites)
+    assert report["precompile_direct_window_sites"] == 1
+    assert report["unresolved_direct_window_sites"] == 0
 
 
 def test_resolved_sstore_callee_is_static_high() -> None:
     records = [
-        _record(1, _fixed_call(2, 5_000)),
-        _record(2, "0x600160005500", value_usd=123.0),
+        _record(0x101, _fixed_call(0x200, 5_000)),
+        _record(0x200, "0x600160005500", value_usd=123.0),
     ]
     sites = classify(records)
     assert len(sites) == 1
@@ -69,7 +83,7 @@ def test_resolved_sstore_callee_is_static_high() -> None:
 
 
 def test_unresolved_target_never_becomes_high_confidence() -> None:
-    records = [_record(1, _fixed_call(2, 5_000))]
+    records = [_record(0x101, _fixed_call(0x200, 5_000))]
     sites = classify(records)
     assert sites[0].classification == "direct_window_unresolved"
     assert sites[0].callee_has_sstore is None
@@ -77,8 +91,8 @@ def test_unresolved_target_never_becomes_high_confidence() -> None:
 
 def test_gas_below_osaka_floor_is_only_candidate() -> None:
     records = [
-        _record(1, _fixed_call(2, 2_899)),
-        _record(2, "0x600160005500"),
+        _record(0x101, _fixed_call(0x200, 2_899)),
+        _record(0x200, "0x600160005500"),
     ]
     sites = classify(records)
     assert sites[0].window == "below_osaka_floor"
@@ -87,8 +101,8 @@ def test_gas_below_osaka_floor_is_only_candidate() -> None:
 
 def test_gas_at_amsterdam_requirement_is_outside_direct_window() -> None:
     records = [
-        _record(1, _fixed_call(2, 10_100)),
-        _record(2, "0x600160005500"),
+        _record(0x101, _fixed_call(0x200, 10_100)),
+        _record(0x200, "0x600160005500"),
     ]
     sites = classify(records)
     assert sites[0].window == "above_direct_window"
@@ -97,9 +111,9 @@ def test_gas_at_amsterdam_requirement_is_outside_direct_window() -> None:
 
 def test_value_is_deduplicated_by_resolved_callee() -> None:
     records = [
-        _record(1, _fixed_call(3, 5_000)),
-        _record(2, _fixed_call(3, 6_000)),
-        _record(3, "0x600160005500", value_usd=1_000.0),
+        _record(0x101, _fixed_call(0x300, 5_000)),
+        _record(0x102, _fixed_call(0x300, 6_000)),
+        _record(0x300, "0x600160005500", value_usd=1_000.0),
     ]
     sites = classify(records)
     report = summarize(records, sites)
