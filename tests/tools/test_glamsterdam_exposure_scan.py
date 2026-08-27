@@ -34,6 +34,14 @@ def test_push_immediate_55_is_not_sstore() -> None:
     assert contains_sstore(decode_hex("0x600160005500")) is True
 
 
+def test_oversized_shl_follows_evm_semantics_without_allocating() -> None:
+    caller = normalize_address("0x1")
+    huge_shift = "ff" * 32
+    # PUSH1 1; PUSH32 (2**256-1); SHL; STOP. EIP-145 defines this as zero.
+    code = decode_hex("0x60017f" + huge_shift + "1b00")
+    assert recover_fixed_calls(caller, code) == []
+
+
 def test_fixed_call_in_repricing_window_is_recovered() -> None:
     caller = normalize_address("0x1")
     calls = recover_fixed_calls(caller, decode_hex(_fixed_call(2, 5_000)))
