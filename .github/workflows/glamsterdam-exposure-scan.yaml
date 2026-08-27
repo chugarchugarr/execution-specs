@@ -14,7 +14,41 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.14"
-      - name: Run scanner unit tests
+      - name: Run scanner and importer unit tests
         env:
           PYTHONPATH: .
-        run: uv run pytest -q tests/tools/test_glamsterdam_exposure_scan.py
+        run: >
+          uv run pytest -q
+          tests/tools/test_glamsterdam_exposure_scan.py
+          tests/tools/test_glamsterdam_cgt_import.py
+
+  cgt-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout execution-specs analysis branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.14"
+      - name: Checkout pinned CGT corpus
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: gsalzer/cgt
+          ref: f8cd72cf7fbbfebc809c454667eee271706a4b2b
+          path: .just/cgt
+          persist-credentials: false
+      - name: Reconstruct scanner input from CGT metadata
+        env:
+          PYTHONPATH: .
+        run: >
+          uv run python tools/glamsterdam_cgt_import.py
+          --consolidated .just/cgt/consolidated.csv
+          --runtime-dir .just/cgt/runtime
+          --out .just/cgt-mainnet.ndjson
+      - name: Scan pinned CGT mainnet runtime corpus
+        env:
+          PYTHONPATH: .
+        run: >
+          uv run python tools/glamsterdam_exposure_scan.py
+          .just/cgt-mainnet.ndjson
+          --sites .just/cgt-call-sites.csv
