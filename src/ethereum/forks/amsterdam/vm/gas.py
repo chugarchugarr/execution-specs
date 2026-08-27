@@ -18,10 +18,16 @@ from ethereum_types.numeric import U64, U256, Uint, ulen
 
 from ethereum.forks.bpo5.blocks import Header as PreviousHeader
 from ethereum.trace import GasAndRefund, StateGasAndRefund, evm_trace
-from ethereum.utils.numeric import ceil32, taylor_exponential
+from ethereum.utils.numeric import ceil32
 
 from ..blocks import Header
 from ..fork_types import StateGas, StateGasPerByte
+from ..slot_timing import (
+    SLOT_DURATION_SCHEDULE,
+    SlotDurationSchedule,
+    calculate_blob_gas_price_for_slot,
+    get_blob_schedule,
+)
 from ..transactions import (
     TX_MAX_GAS_LIMIT,
     BlobTransaction,
@@ -32,6 +38,9 @@ from .exceptions import OutOfGasError
 
 if TYPE_CHECKING:
     from . import Evm
+
+
+_INITIAL_SLOT = U64(0)
 
 
 # These may be patched at runtime by a future gas repricing utility to
@@ -806,115 +815,76 @@ def init_code_cost(init_code_length: Uint) -> Uint:
 
 def calculate_excess_blob_gas(
     parent_header: Header | PreviousHeader,
+    current_slot_number: U64 = _INITIAL_SLOT,
+    slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
 ) -> U64:
-    """
-    Calculates the excess blob gas for the current block based
-    on the gas used in the parent block.
-
-    Parameters
-    ----------
-    parent_header :
-        The parent block of the current block.
-
-    Returns
-    -------
-    excess_blob_gas: `ethereum.base_types.U64`
-        The excess blob gas for the current block.
-
-    """
-    # At the fork block, these are defined as zero.
+    """Calculate excess blob gas using the current slot-duration era."""
     excess_blob_gas = U64(0)
     blob_gas_used = U64(0)
     base_fee_per_gas = Uint(0)
 
     if isinstance(parent_header, Header):
-        # After the fork block, read them from the parent header.
         excess_blob_gas = parent_header.excess_blob_gas
         blob_gas_used = parent_header.blob_gas_used
         base_fee_per_gas = parent_header.base_fee_per_gas
 
+    blob_schedule = get_blob_schedule(
+        current_slot_number, slot_duration_schedule
+    )
+    target_blob_gas_per_block = GasCosts.PER_BLOB * blob_schedule.target
     parent_blob_gas = excess_blob_gas + blob_gas_used
-    if parent_blob_gas < GasCosts.BLOB_TARGET_GAS_PER_BLOCK:
+    if parent_blob_gas < target_blob_gas_per_block:
         return U64(0)
 
     target_blob_gas_price = Uint(GasCosts.PER_BLOB)
-    target_blob_gas_price *= calculate_blob_gas_price(excess_blob_gas)
+    target_blob_gas_price *= calculate_blob_gas_price(
+        excess_blob_gas,
+        current_slot_number,
+        slot_duration_schedule,
+    )
 
     base_blob_tx_price = GasCosts.BLOB_BASE_COST * base_fee_per_gas
     if base_blob_tx_price > target_blob_gas_price:
-        blob_schedule_delta = (
-            GasCosts.BLOB_SCHEDULE_MAX - GasCosts.BLOB_SCHEDULE_TARGET
-        )
-        return (
+        blob_schedule_delta = blob_schedule.maximum - blob_schedule.target
+        return U64(
             excess_blob_gas
-            + blob_gas_used * blob_schedule_delta // GasCosts.BLOB_SCHEDULE_MAX
+            + blob_gas_used * blob_schedule_delta // blob_schedule.maximum
         )
 
-    return parent_blob_gas - GasCosts.BLOB_TARGET_GAS_PER_BLOCK
+    return U64(parent_blob_gas - target_blob_gas_per_block)
 
 
 def calculate_total_blob_gas(tx: Transaction) -> U64:
-    """
-    Calculate the total blob gas for a transaction.
-
-    Parameters
-    ----------
-    tx :
-        The transaction for which the blob gas is to be calculated.
-
-    Returns
-    -------
-    total_blob_gas: `ethereum.base_types.Uint`
-        The total blob gas for the transaction.
-
-    """
+    """Calculate the total blob gas for a transaction."""
     if isinstance(tx, BlobTransaction):
         return GasCosts.PER_BLOB * U64(len(tx.blob_versioned_hashes))
-    else:
-        return U64(0)
+    return U64(0)
 
 
-def calculate_blob_gas_price(excess_blob_gas: U64) -> Uint:
-    """
-    Calculate the blob gasprice for a block.
-
-    Parameters
-    ----------
-    excess_blob_gas :
-        The excess blob gas for the block.
-
-    Returns
-    -------
-    blob_gasprice: `Uint`
-        The blob gasprice.
-
-    """
-    return taylor_exponential(
-        GasCosts.BLOB_MIN_GASPRICE,
-        Uint(excess_blob_gas),
-        GasCosts.BLOB_BASE_FEE_UPDATE_FRACTION,
+def calculate_blob_gas_price(
+    excess_blob_gas: U64,
+    slot_number: U64 = _INITIAL_SLOT,
+    slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+) -> Uint:
+    """Calculate the blob gas price for the supplied duration era."""
+    return calculate_blob_gas_price_for_slot(
+        excess_blob_gas,
+        slot_number,
+        slot_duration_schedule,
     )
 
 
-def calculate_data_fee(excess_blob_gas: U64, tx: Transaction) -> Uint:
-    """
-    Calculate the blob data fee for a transaction.
-
-    Parameters
-    ----------
-    excess_blob_gas :
-        The excess_blob_gas for the execution.
-    tx :
-        The transaction for which the blob data fee is to be calculated.
-
-    Returns
-    -------
-    data_fee: `Uint`
-        The blob data fee.
-
-    """
+def calculate_data_fee(
+    excess_blob_gas: U64,
+    tx: Transaction,
+    slot_number: U64 = _INITIAL_SLOT,
+    slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+) -> Uint:
+    """Calculate the blob data fee for the supplied duration era."""
     return Uint(calculate_total_blob_gas(tx)) * calculate_blob_gas_price(
-        excess_blob_gas
+        excess_blob_gas,
+        slot_number,
+        slot_duration_schedule,
     )
 
 
