@@ -32,11 +32,15 @@ def test_additional_8s_era_is_schedule_data_only() -> None:
     assert get_slot_duration_ms(
         U64(first_10s_slot - U64(1)), SCHEDULE_12_10_8_6
     ) == Uint(12000)
-    assert get_slot_duration_ms(first_10s_slot, SCHEDULE_12_10_8_6) == Uint(
-        10000
-    )
-    assert get_slot_duration_ms(first_8s_slot, SCHEDULE_12_10_8_6) == Uint(8000)
-    assert get_slot_duration_ms(first_6s_slot, SCHEDULE_12_10_8_6) == Uint(6000)
+    assert get_slot_duration_ms(
+        first_10s_slot, SCHEDULE_12_10_8_6
+    ) == Uint(10000)
+    assert get_slot_duration_ms(
+        first_8s_slot, SCHEDULE_12_10_8_6
+    ) == Uint(8000)
+    assert get_slot_duration_ms(
+        first_6s_slot, SCHEDULE_12_10_8_6
+    ) == Uint(6000)
 
 
 def test_capacity_scaling_composes_through_8s_era() -> None:
@@ -81,7 +85,7 @@ def test_capacity_scaling_composes_through_8s_era() -> None:
 
 
 def test_blob_schedule_composes_through_8s_era() -> None:
-    """Blob parameters are derived through the added era without a new branch."""
+    """Derive blob parameters through the added era without a new branch."""
     first_8s_slot = U64(MID_TEST_EPOCH * SLOTS_PER_EPOCH)
     first_6s_slot = U64(FUTURE_TEST_EPOCH * SLOTS_PER_EPOCH)
 
