@@ -52,6 +52,62 @@ jobs:
             GIT_EDITOR=true git cherry-pick --continue
           fi
           python /tmp/eip8198_upstream_adapt.py "$OLD_HEAD"
+          python - <<'PY'
+          from pathlib import Path
+
+          fork = Path('src/ethereum/forks/amsterdam/fork.py')
+          s = fork.read_text()
+          s = s.replace('    BLOB_GAS_PER_BLOB,\n', '', 1)
+          s = s.replace('    get_blob_schedule,\n', '', 1)
+          start = s.index('def get_max_blob_gas_per_block(')
+          end = s.index('def calculate_base_fee_per_gas(', start)
+          s = s[:start] + s[end:]
+          fork.write_text(s)
+
+          slot = Path('src/ethereum/forks/amsterdam/slot_timing.py')
+          s = slot.read_text()
+          anchor = '\ndef calculate_blob_gas_price_for_slot('
+          helper = '''\ndef get_max_blob_gas_per_block(
+              slot_number: U64,
+              schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+          ) -> U64:
+              """Return blob gas capacity for the active duration era."""
+              return BLOB_GAS_PER_BLOB * get_blob_schedule(slot_number, schedule).maximum
+
+          '''
+          if anchor not in s:
+              raise SystemExit('slot timing helper anchor missing')
+          s = s.replace(anchor, helper + anchor, 1)
+          slot.write_text(s)
+
+          gas = Path('src/ethereum/forks/amsterdam/vm/gas.py')
+          s = gas.read_text()
+          old = '    get_blob_schedule,\n)'
+          new = '    get_blob_schedule,\n    get_max_blob_gas_per_block,\n)'
+          if old not in s:
+              raise SystemExit('gas slot timing import anchor missing')
+          s = s.replace(old, new, 1)
+          old = '''    blob_gas_available = (
+              GasCosts.PER_BLOB * get_blob_schedule(block_env.slot_number).maximum
+              - block_output.blob_gas_used
+          )'''
+          new = '''    blob_gas_available = (
+              get_max_blob_gas_per_block(block_env.slot_number)
+              - block_output.blob_gas_used
+          )'''
+          if old not in s:
+              raise SystemExit('gas capacity expression missing')
+          gas.write_text(s.replace(old, new, 1))
+
+          test = Path('tests/evm_tools/eip8198_quick_slots/test_slot_timing.py')
+          s = test.read_text()
+          s = s.replace('    get_max_blob_gas_per_block,\n', '', 1)
+          old = '    get_blob_schedule,\n'
+          new = '    get_blob_schedule,\n    get_max_blob_gas_per_block,\n'
+          if old not in s:
+              raise SystemExit('test slot timing import anchor missing')
+          test.write_text(s.replace(old, new, 1))
+          PY
           git add src/ethereum/forks/amsterdam/fork.py \
             src/ethereum/forks/amsterdam/slot_timing.py \
             src/ethereum/forks/amsterdam/vm/gas.py \
