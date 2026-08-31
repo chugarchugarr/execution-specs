@@ -136,8 +136,30 @@ jobs:
               tests/evm_tools/eip8198_quick_slots
             git commit --amend --no-edit
           fi
-      - name: Static validation
-        run: just static
+      - name: Static / typecheck
+        if: always()
+        run: just typecheck
+      - name: Static / lint-spec
+        if: always()
+        run: just lint-spec
+      - name: Static / spellcheck
+        if: always()
+        run: just spellcheck
+      - name: Static / deadcode
+        if: always()
+        run: just deadcode
+      - name: Static / lint-actions
+        if: always()
+        run: just lint-actions
+      - name: Static / lock-check
+        if: always()
+        run: just lock-check
+      - name: Static / format-check
+        if: always()
+        run: just format-check
+      - name: Static / lint
+        if: always()
+        run: just lint
       - name: Spec-tools validation
         run: just spec-tools
       - name: Focused EIP-8198 pytest
