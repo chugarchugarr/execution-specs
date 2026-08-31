@@ -16,6 +16,10 @@ jobs:
         with:
           ref: eip8198-slot-time-agnostic-review
           fetch-depth: 0
+      - name: Configure rebase identity
+        run: |
+          git config user.name "chugarchugarr"
+          git config user.email "josephlerma19@gmail.com"
       - name: Add upstream and fetch Amsterdam
         run: |
           git remote add upstream https://github.com/ethereum/execution-specs.git
