@@ -20,12 +20,51 @@ jobs:
         run: |
           git remote add upstream https://github.com/ethereum/execution-specs.git
           git fetch upstream forks/amsterdam
-      - name: Reproduce rebase and report only actual conflicts
+      - name: Rebase and resolve only the verified first conflict
         shell: bash
         run: |
           set +e
           git rebase upstream/forks/amsterdam
           rc=$?
+
+          if [ "$rc" -ne 0 ] && [ "$(git diff --name-only --diff-filter=U)" = "src/ethereum/forks/amsterdam/fork.py" ]; then
+            git checkout --conflict=diff3 -- src/ethereum/forks/amsterdam/fork.py
+            python - <<'PY'
+          from pathlib import Path
+          p = Path('src/ethereum/forks/amsterdam/fork.py')
+          s = p.read_text()
+          old = '''<<<<<<< ours
+          SYSTEM_TRANSACTION_GAS = ExecutionGas(Uint(30000000))
+          ||||||| base
+          SYSTEM_TRANSACTION_GAS = Uint(30000000)
+          =======
+          """
+          Address of the beacon roots ring buffer contract. Its 8191-entry buffer
+          holds one root per slot, so its wall-clock coverage shrinks from ~27.3
+          hours to ~22.8 hours under 10-second slots. The buffer length is part of
+          the deployed contract and is deliberately not changed by this fork.
+          """
+          SYSTEM_TRANSACTION_GAS = Uint(30000000)
+          >>>>>>> theirs'''
+          new = '''"""
+          Address of the beacon roots ring buffer contract. Its 8191-entry buffer
+          holds one root per slot, so its wall-clock coverage shrinks from ~27.3
+          hours to ~22.8 hours under 10-second slots. The buffer length is part of
+          the deployed contract and is deliberately not changed by this fork.
+          """
+          SYSTEM_TRANSACTION_GAS = ExecutionGas(Uint(30000000))'''
+          if old not in s:
+              raise SystemExit('verified conflict block not found exactly')
+          p.write_text(s.replace(old, new, 1))
+          PY
+            if [ $? -ne 0 ]; then
+              exit 2
+            fi
+            git add src/ethereum/forks/amsterdam/fork.py
+            GIT_EDITOR=true git rebase --continue
+            rc=$?
+          fi
+
           echo "REBASE_EXIT=$rc"
           echo "--- STATUS ---"
           git status --short
