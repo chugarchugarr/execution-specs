@@ -1,0 +1,506 @@
+name: EIP-8198 upstream adaptation proof
+
+on:
+  push:
+    branches:
+      - ci/eip8198-upstream-rebase
+
+permissions:
+  contents: write
+
+jobs:
+  adapt-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: eip8198-slot-time-agnostic-review
+          fetch-depth: 0
+      - name: Configure identity and fetch upstream
+        run: |
+          git config user.name "chugarchugarr"
+          git config user.email "josephlerma19@gmail.com"
+          git remote add upstream https://github.com/ethereum/execution-specs.git
+          git fetch upstream forks/amsterdam
+          git fetch origin eip8198-slot-time-agnostic-review
+          echo "OLD_HEAD=$(git rev-parse origin/eip8198-slot-time-agnostic-review)" >> "$GITHUB_ENV"
+          echo "UPSTREAM_HEAD=$(git rev-parse upstream/forks/amsterdam)" >> "$GITHUB_ENV"
+
+      - name: Replay EIP-8198 reference commit onto current Amsterdam
+        shell: bash
+        run: |
+          git checkout -B rebased-eip8198-ready upstream/forks/amsterdam
+          set +e
+          git cherry-pick 0e8cc7fa0c49f7abfddde9e1f14a40bc54fd407c
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            test "$(git diff --name-only --diff-filter=U)" = "src/ethereum/forks/amsterdam/fork.py"
+            git checkout --conflict=diff3 -- src/ethereum/forks/amsterdam/fork.py
+            python - <<'PY'
+          from pathlib import Path
+          p = Path('src/ethereum/forks/amsterdam/fork.py')
+          s = p.read_text()
+          old = '''<<<<<<< HEAD
+          SYSTEM_TRANSACTION_GAS = ExecutionGas(Uint(30000000))
+          ||||||| parent of 0e8cc7fa0 (feat(spec): rescale per-block rates for 10-second slots (EIP-8198))
+          SYSTEM_TRANSACTION_GAS = Uint(30000000)
+          =======
+          """
+          Address of the beacon roots ring buffer contract. Its 8191-entry buffer
+          holds one root per slot, so its wall-clock coverage shrinks from ~27.3
+          hours to ~22.8 hours under 10-second slots. The buffer length is part of
+          the deployed contract and is deliberately not changed by this fork.
+          """
+          SYSTEM_TRANSACTION_GAS = Uint(30000000)
+          >>>>>>> 0e8cc7fa0 (feat(spec): rescale per-block rates for 10-second slots (EIP-8198))'''
+          if old not in s:
+              # Git's marker labels can vary; replace structurally instead.
+              start = s.index('<<<<<<< HEAD\nSYSTEM_TRANSACTION_GAS = ExecutionGas(Uint(30000000))')
+              end = s.index('>>>>>>>', start)
+              end = s.index('\n', end) + 1
+              new = '''"""
+          Address of the beacon roots ring buffer contract. Its 8191-entry buffer
+          holds one root per slot, so its wall-clock coverage shrinks from ~27.3
+          hours to ~22.8 hours under 10-second slots. The buffer length is part of
+          the deployed contract and is deliberately not changed by this fork.
+          """
+          SYSTEM_TRANSACTION_GAS = ExecutionGas(Uint(30000000))
+          '''
+              s = s[:start] + new + s[end:]
+          else:
+              new = '''"""
+          Address of the beacon roots ring buffer contract. Its 8191-entry buffer
+          holds one root per slot, so its wall-clock coverage shrinks from ~27.3
+          hours to ~22.8 hours under 10-second slots. The buffer length is part of
+          the deployed contract and is deliberately not changed by this fork.
+          """
+          SYSTEM_TRANSACTION_GAS = ExecutionGas(Uint(30000000))'''
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+            git add src/ethereum/forks/amsterdam/fork.py
+            GIT_EDITOR=true git cherry-pick --continue
+          fi
+
+      - name: Adapt schedule-driven implementation to current upstream architecture
+        shell: bash
+        run: |
+          mkdir -p tests/evm_tools/eip8198_quick_slots
+          for f in \
+            src/ethereum/forks/amsterdam/slot_timing.py \
+            tests/evm_tools/eip8198_quick_slots/__init__.py \
+            tests/evm_tools/eip8198_quick_slots/test_slot_timing.py \
+            tests/evm_tools/eip8198_quick_slots/test_vm_blob_schedule.py \
+            tests/evm_tools/eip8198_quick_slots/test_additional_duration_era.py; do
+            git show "$OLD_HEAD:$f" > "$f"
+          done
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          # fork.py: preserve current helper architecture and add schedule semantics.
+          p = Path('src/ethereum/forks/amsterdam/fork.py')
+          s = p.read_text()
+          anchor = 'from .state_tracker import (\n'
+          slot_import = '''from .slot_timing import (
+              BASE_SLOT_DURATION_MS,
+              BLOB_GAS_PER_BLOB,
+              SLOT_DURATION_SCHEDULE,
+              SlotDurationSchedule,
+              get_blob_schedule,
+              get_slot_duration_ms,
+              get_transition_durations,
+              scale_transition_limit,
+          )
+          '''
+          if slot_import not in s:
+              s = s.replace(anchor, slot_import + anchor, 1)
+
+          s = re.sub(
+              r'SLOT_DURATION_MS = Uint\(10000\)\n""".*?PREVIOUS_SLOT_DURATION_MS = Uint\(12000\)\n"""\nDuration of a consensus-layer slot before this fork, in milliseconds\.\n"""\n',
+              '', s, count=1, flags=re.S,
+          )
+
+          new_base_fee = '''def get_max_blob_gas_per_block(
+              slot_number: U64,
+              slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+          ) -> U64:
+              """Return blob capacity for the slot-duration era."""
+              return (
+                  BLOB_GAS_PER_BLOB
+                  * get_blob_schedule(slot_number, slot_duration_schedule).maximum
+              )
+
+
+          def calculate_base_fee_per_gas(
+              block_gas_limit: Uint,
+              parent_gas_limit: Uint,
+              parent_gas_used: Uint,
+              parent_base_fee_per_gas: Uint,
+              gas_limit_reference: Optional[Uint] = None,
+              slot_duration_ms: Optional[Uint] = None,
+          ) -> Uint:
+              """Calculate the base fee while preserving wall-clock response."""
+              if gas_limit_reference is None:
+                  gas_limit_reference = parent_gas_limit
+              if slot_duration_ms is None:
+                  slot_duration_ms = get_slot_duration_ms(U64(0))
+              parent_gas_target = parent_gas_limit // ELASTICITY_MULTIPLIER
+              if not check_gas_limit(block_gas_limit, gas_limit_reference):
+                  raise InvalidBlock
+
+              if parent_gas_used == parent_gas_target:
+                  expected_base_fee_per_gas = parent_base_fee_per_gas
+              elif parent_gas_used > parent_gas_target:
+                  gas_used_delta = parent_gas_used - parent_gas_target
+                  parent_fee_gas_delta = parent_base_fee_per_gas * gas_used_delta
+                  target_fee_gas_delta = parent_fee_gas_delta // parent_gas_target
+                  base_fee_per_gas_delta = max(
+                      target_fee_gas_delta
+                      * slot_duration_ms
+                      // (BASE_SLOT_DURATION_MS * BASE_FEE_MAX_CHANGE_DENOMINATOR),
+                      Uint(1),
+                  )
+                  expected_base_fee_per_gas = (
+                      parent_base_fee_per_gas + base_fee_per_gas_delta
+                  )
+              else:
+                  gas_used_delta = parent_gas_target - parent_gas_used
+                  parent_fee_gas_delta = parent_base_fee_per_gas * gas_used_delta
+                  target_fee_gas_delta = parent_fee_gas_delta // parent_gas_target
+                  base_fee_per_gas_delta = (
+                      target_fee_gas_delta
+                      * slot_duration_ms
+                      // (BASE_SLOT_DURATION_MS * BASE_FEE_MAX_CHANGE_DENOMINATOR)
+                  )
+                  expected_base_fee_per_gas = (
+                      parent_base_fee_per_gas - base_fee_per_gas_delta
+                  )
+              return Uint(expected_base_fee_per_gas)
+
+
+          '''
+          s, n = re.subn(
+              r'def calculate_base_fee_per_gas\(.*?(?=def validate_header\()',
+              new_base_fee,
+              s,
+              count=1,
+              flags=re.S,
+          )
+          assert n == 1, 'base-fee function replacement failed'
+
+          new_validate = '''def validate_header(
+              parent_header: Header | PreviousHeader,
+              header: Header,
+              slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+          ) -> None:
+              """Verify a block header against its parent."""
+              if header.number < Uint(1):
+                  raise InvalidBlock
+
+              excess_blob_gas = calculate_excess_blob_gas(
+                  parent_header,
+                  header.slot_number,
+                  slot_duration_schedule,
+              )
+              if header.excess_blob_gas != excess_blob_gas:
+                  raise InvalidBlock
+
+              if header.gas_used > header.gas_limit:
+                  raise InvalidBlock
+
+              parent_slot_number: Optional[U64]
+              if isinstance(parent_header, Header):
+                  parent_slot_number = parent_header.slot_number
+              else:
+                  parent_slot_number = None
+
+              old_duration_ms, new_duration_ms = get_transition_durations(
+                  parent_slot_number,
+                  header.slot_number,
+                  slot_duration_schedule,
+              )
+              gas_limit_reference = scale_transition_limit(
+                  parent_header.gas_limit,
+                  old_duration_ms,
+                  new_duration_ms,
+              )
+              expected_base_fee_per_gas = calculate_base_fee_per_gas(
+                  header.gas_limit,
+                  parent_header.gas_limit,
+                  parent_header.gas_used,
+                  parent_header.base_fee_per_gas,
+                  gas_limit_reference=gas_limit_reference,
+                  slot_duration_ms=new_duration_ms,
+              )
+              if expected_base_fee_per_gas != header.base_fee_per_gas:
+                  raise InvalidBlock
+              if header.timestamp <= parent_header.timestamp:
+                  raise InvalidBlock
+              if header.number != parent_header.number + Uint(1):
+                  raise InvalidBlock
+              if len(header.extra_data) > 32:
+                  raise InvalidBlock
+              if header.difficulty != 0:
+                  raise InvalidBlock
+              if header.nonce != b"\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00":
+                  raise InvalidBlock
+              if header.ommers_hash != EMPTY_OMMER_HASH:
+                  raise InvalidBlock
+
+              block_parent_hash = keccak256(rlp.encode(parent_header))
+              if header.parent_hash != block_parent_hash:
+                  raise InvalidBlock
+
+
+          '''
+          s, n = re.subn(
+              r'def validate_header\(.*?(?=def check_transaction\()',
+              new_validate,
+              s,
+              count=1,
+              flags=re.S,
+          )
+          assert n == 1, 'validate_header replacement failed'
+
+          old = '''        check_max_fee_per_blob_gas(
+                      tx.blob_versioned_hashes,
+                      tx.max_fee_per_blob_gas,
+                      block_env.excess_blob_gas,
+                  )'''
+          new = '''        check_max_fee_per_blob_gas(
+                      tx.blob_versioned_hashes,
+                      tx.max_fee_per_blob_gas,
+                      block_env.excess_blob_gas,
+                      block_env.slot_number,
+                  )'''
+          assert old in s, 'blob fee helper call not found'
+          s = s.replace(old, new, 1)
+
+          old = '        blob_gas_fee = calculate_data_fee(block_env.excess_blob_gas, tx)'
+          new = '''        blob_gas_fee = calculate_data_fee(
+                      block_env.excess_blob_gas,
+                      tx,
+                      block_env.slot_number,
+                  )'''
+          assert old in s, 'data fee call not found'
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # vm/gas.py: preserve current typed gas/refactor and make current helpers schedule-aware.
+          p = Path('src/ethereum/forks/amsterdam/vm/gas.py')
+          s = p.read_text()
+          s = s.replace(
+              'from ethereum.utils.numeric import ceil32, taylor_exponential\n',
+              'from ethereum.utils.numeric import ceil32\n',
+              1,
+          )
+          anchor = 'from ..transactions import (\n'
+          slot_import = '''from ..slot_timing import (
+              SLOT_DURATION_SCHEDULE,
+              SlotDurationSchedule,
+              calculate_blob_gas_price_for_slot,
+              get_blob_schedule,
+          )
+          '''
+          if slot_import not in s:
+              s = s.replace(anchor, slot_import + anchor, 1)
+          marker = 'if TYPE_CHECKING:\n    from . import BlockEnvironment, BlockOutput, Evm\n\n\n'
+          assert marker in s
+          s = s.replace(marker, marker + '_INITIAL_SLOT = U64(0)\n\n\n', 1)
+
+          new_excess = '''def calculate_excess_blob_gas(
+              parent_header: Header | PreviousHeader,
+              current_slot_number: U64 = _INITIAL_SLOT,
+              slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+          ) -> U64:
+              """Calculate excess blob gas using the current slot-duration era."""
+              excess_blob_gas = U64(0)
+              blob_gas_used = U64(0)
+              base_fee_per_gas = Uint(0)
+
+              if isinstance(parent_header, (Header, PreviousHeader)):
+                  excess_blob_gas = parent_header.excess_blob_gas
+                  blob_gas_used = parent_header.blob_gas_used
+                  base_fee_per_gas = parent_header.base_fee_per_gas
+
+              blob_schedule = get_blob_schedule(
+                  current_slot_number, slot_duration_schedule
+              )
+              target_blob_gas_per_block = GasCosts.PER_BLOB * blob_schedule.target
+              parent_blob_gas = excess_blob_gas + blob_gas_used
+              if parent_blob_gas < target_blob_gas_per_block:
+                  return U64(0)
+
+              target_blob_gas_price = Uint(GasCosts.PER_BLOB)
+              target_blob_gas_price *= calculate_blob_gas_price(
+                  excess_blob_gas,
+                  current_slot_number,
+                  slot_duration_schedule,
+              )
+
+              base_blob_tx_price = GasCosts.BLOB_BASE_COST * base_fee_per_gas
+              if base_blob_tx_price > target_blob_gas_price:
+                  blob_schedule_delta = blob_schedule.maximum - blob_schedule.target
+                  return U64(
+                      excess_blob_gas
+                      + blob_gas_used * blob_schedule_delta // blob_schedule.maximum
+                  )
+
+              return U64(parent_blob_gas - target_blob_gas_per_block)
+
+
+          '''
+          s, n = re.subn(
+              r'def calculate_excess_blob_gas\(.*?(?=def calculate_total_blob_gas\()',
+              new_excess,
+              s,
+              count=1,
+              flags=re.S,
+          )
+          assert n == 1, 'excess blob function replacement failed'
+
+          new_price = '''def calculate_blob_gas_price(
+              excess_blob_gas: U64,
+              slot_number: U64 = _INITIAL_SLOT,
+              slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+          ) -> Uint:
+              """Calculate the blob gas price for the supplied duration era."""
+              return calculate_blob_gas_price_for_slot(
+                  excess_blob_gas,
+                  slot_number,
+                  slot_duration_schedule,
+              )
+
+
+          '''
+          s, n = re.subn(
+              r'def calculate_blob_gas_price\(.*?(?=def calculate_data_fee\()',
+              new_price,
+              s,
+              count=1,
+              flags=re.S,
+          )
+          assert n == 1, 'blob price function replacement failed'
+
+          new_data = '''def calculate_data_fee(
+              excess_blob_gas: U64,
+              tx: Transaction,
+              slot_number: U64 = _INITIAL_SLOT,
+              slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+          ) -> Uint:
+              """Calculate the blob data fee for the supplied duration era."""
+              return Uint(calculate_total_blob_gas(tx)) * calculate_blob_gas_price(
+                  excess_blob_gas,
+                  slot_number,
+                  slot_duration_schedule,
+              )
+
+
+          '''
+          s, n = re.subn(
+              r'def calculate_data_fee\(.*?(?=def check_max_fee_per_blob_gas\()',
+              new_data,
+              s,
+              count=1,
+              flags=re.S,
+          )
+          assert n == 1, 'data fee function replacement failed'
+
+          new_check_fee = '''def check_max_fee_per_blob_gas(
+              blob_versioned_hashes: Tuple[VersionedHash, ...],
+              max_fee_per_blob_gas: U256,
+              excess_blob_gas: U64,
+              slot_number: U64 = _INITIAL_SLOT,
+              slot_duration_schedule: SlotDurationSchedule = SLOT_DURATION_SCHEDULE,
+          ) -> None:
+              """Check that a blob transaction covers the active-era blob price."""
+              if not blob_versioned_hashes:
+                  return
+              blob_gas_price = calculate_blob_gas_price(
+                  excess_blob_gas,
+                  slot_number,
+                  slot_duration_schedule,
+              )
+              if Uint(max_fee_per_blob_gas) < blob_gas_price:
+                  raise InsufficientMaxFeePerBlobGasError(
+                      "insufficient max fee per blob gas"
+                  )
+
+
+          '''
+          s, n = re.subn(
+              r'def check_max_fee_per_blob_gas\(.*?(?=def check_block_gas_capacity\()',
+              new_check_fee,
+              s,
+              count=1,
+              flags=re.S,
+          )
+          assert n == 1, 'blob fee check replacement failed'
+
+          old = '    blob_gas_available = MAX_BLOB_GAS_PER_BLOCK - block_output.blob_gas_used'
+          new = '''    blob_gas_available = (
+                  GasCosts.PER_BLOB * get_blob_schedule(block_env.slot_number).maximum
+                  - block_output.blob_gas_used
+              )'''
+          assert old in s, 'block blob capacity line not found'
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # BLOBBASEFEE opcode: preserve current evm.block_env path and add slot.
+          p = Path('src/ethereum/forks/amsterdam/vm/instructions/environment.py')
+          s = p.read_text()
+          old = '    blob_base_fee = calculate_blob_gas_price(evm.block_env.excess_blob_gas)'
+          new = '''    blob_base_fee = calculate_blob_gas_price(
+                  evm.block_env.excess_blob_gas,
+                  evm.block_env.slot_number,
+              )'''
+          assert old in s, 'BLOBBASEFEE call not found'
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+          git add \
+            src/ethereum/forks/amsterdam/fork.py \
+            src/ethereum/forks/amsterdam/slot_timing.py \
+            src/ethereum/forks/amsterdam/vm/gas.py \
+            src/ethereum/forks/amsterdam/vm/instructions/environment.py \
+            tests/evm_tools/eip8198_quick_slots
+          git commit -m "feat(eip-8198): make slot-duration changes schedule-driven"
+
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.14"
+
+      - name: Format only EIP-8198 changed Python files
+        run: |
+          uv run ruff format \
+            src/ethereum/forks/amsterdam/fork.py \
+            src/ethereum/forks/amsterdam/slot_timing.py \
+            src/ethereum/forks/amsterdam/vm/gas.py \
+            src/ethereum/forks/amsterdam/vm/instructions/environment.py \
+            tests/evm_tools/eip8198_quick_slots
+          if ! git diff --quiet; then
+            git add \
+              src/ethereum/forks/amsterdam/fork.py \
+              src/ethereum/forks/amsterdam/slot_timing.py \
+              src/ethereum/forks/amsterdam/vm/gas.py \
+              src/ethereum/forks/amsterdam/vm/instructions/environment.py \
+              tests/evm_tools/eip8198_quick_slots
+            git commit --amend --no-edit
+          fi
+
+      - name: Exact validation
+        run: |
+          just static
+          just spec-tools
+          uv run pytest -q tests/evm_tools/eip8198_quick_slots/test_additional_duration_era.py
+          test "$(git merge-base HEAD upstream/forks/amsterdam)" = "$UPSTREAM_HEAD"
+          git diff --check upstream/forks/amsterdam...HEAD
+          echo "REBASING_RESULT=$(git rev-parse HEAD)"
+
+      - name: Publish validated rebased candidate
+        run: |
+          git push --force origin HEAD:refs/heads/rebased/eip8198-upstream-ready
