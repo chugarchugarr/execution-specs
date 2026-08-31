@@ -136,13 +136,17 @@ jobs:
               tests/evm_tools/eip8198_quick_slots
             git commit --amend --no-edit
           fi
-      - name: Exact validation
-        run: |
-          just static
-          just spec-tools
-          uv run pytest -q tests/evm_tools/eip8198_quick_slots/test_additional_duration_era.py
-          test "$(git merge-base HEAD upstream/forks/amsterdam)" = "$UPSTREAM_HEAD"
-          git diff --check upstream/forks/amsterdam...HEAD
-          echo "REBASING_RESULT=$(git rev-parse HEAD)"
+      - name: Static validation
+        run: just static
+      - name: Spec-tools validation
+        run: just spec-tools
+      - name: Focused EIP-8198 pytest
+        run: uv run pytest -q tests/evm_tools/eip8198_quick_slots/test_additional_duration_era.py
+      - name: Verify exact upstream merge base
+        run: test "$(git merge-base HEAD upstream/forks/amsterdam)" = "$UPSTREAM_HEAD"
+      - name: Verify clean diff
+        run: git diff --check upstream/forks/amsterdam...HEAD
+      - name: Record validated candidate
+        run: echo "REBASING_RESULT=$(git rev-parse HEAD)"
       - name: Publish validated candidate
         run: git push --force origin HEAD:refs/heads/rebased/eip8198-upstream-ready
