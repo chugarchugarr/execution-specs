@@ -22,6 +22,16 @@ jobs:
           git config user.name "chugarchugarr"
           git config user.email "josephlerma19@gmail.com"
           cp scripts/eip8198_upstream_adapt.py /tmp/eip8198_upstream_adapt.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/eip8198_upstream_adapt.py')
+          s = p.read_text()
+          old = 'out, n = re.subn(pattern, replacement, source, count=1, flags=re.S)'
+          new = 'out, n = re.subn(pattern, lambda _: replacement, source, count=1, flags=re.S)'
+          if old not in s:
+              raise SystemExit('literal replacement patch target missing')
+          p.write_text(s.replace(old, new, 1))
+          PY
           git fetch origin eip8198-slot-time-agnostic-review
           git remote add upstream https://github.com/ethereum/execution-specs.git
           git fetch upstream forks/amsterdam
