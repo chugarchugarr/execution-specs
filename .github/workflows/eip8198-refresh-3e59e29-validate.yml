@@ -1,4 +1,4 @@
-name: EIP-8198 refresh 3e59e29 exact validation
+name: EIP-8198 refresh current Amsterdam exact validation
 
 on:
   push:
@@ -12,14 +12,14 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: e365a693a2149dbb46ae95b0544b034e67f33d12
+          ref: 7654c54acd52df0207c9d4ee668926bc1c2b65d0
           fetch-depth: 0
       - name: Fetch and pin Amsterdam base
         run: |
           git remote add upstream https://github.com/ethereum/execution-specs.git
           git fetch upstream forks/amsterdam
-          test "$(git rev-parse upstream/forks/amsterdam)" = "3e59e29e41589bc3c2d6a0276fcc445531550a6b"
-          test "$(git merge-base HEAD upstream/forks/amsterdam)" = "3e59e29e41589bc3c2d6a0276fcc445531550a6b"
+          test "$(git rev-parse upstream/forks/amsterdam)" = "6a2a98b761d08cbe4107a6e00c07d21d965e473e"
+          test "$(git merge-base HEAD upstream/forks/amsterdam)" = "6a2a98b761d08cbe4107a6e00c07d21d965e473e"
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.14"
@@ -49,6 +49,6 @@ jobs:
           test "$actual" = "$expected"
       - name: Record validated candidate
         run: |
-          test "$(git rev-parse HEAD)" = "e365a693a2149dbb46ae95b0544b034e67f33d12"
-          echo "VALIDATED_HEAD=e365a693a2149dbb46ae95b0544b034e67f33d12"
-          echo "VALIDATED_BASE=3e59e29e41589bc3c2d6a0276fcc445531550a6b"
+          test "$(git rev-parse HEAD)" = "7654c54acd52df0207c9d4ee668926bc1c2b65d0"
+          echo "VALIDATED_HEAD=7654c54acd52df0207c9d4ee668926bc1c2b65d0"
+          echo "VALIDATED_BASE=6a2a98b761d08cbe4107a6e00c07d21d965e473e"
