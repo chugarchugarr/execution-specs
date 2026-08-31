@@ -27,31 +27,24 @@ jobs:
           start = s.index(anchor) + len(anchor)
           end = s.index("\n          PY\n", start)
           replacement = '''          from pathlib import Path
-          import re
           p = Path('src/ethereum/forks/amsterdam/fork.py')
           s = p.read_text()
-          pattern = re.compile(
-              r'<<<<<<< [^\\n]+\\n'
-              r'SYSTEM_TRANSACTION_GAS = ExecutionGas\\(Uint\\(30000000\\)\\)\\n'
-              r'.*?'
-              r'=======\\n'
-              r'"""\\nAddress of the beacon roots ring buffer contract\\..*?'
-              r'SYSTEM_TRANSACTION_GAS = Uint\\(30000000\\)\\n'
-              r'>>>>>>> [^\\n]+\\n',
-              re.S,
-          )
-          new = '''"""
-          Address of the beacon roots ring buffer contract. Its 8191-entry buffer
-          holds one root per slot, so its wall-clock coverage shrinks from ~27.3
-          hours to ~22.8 hours under 10-second slots. The buffer length is part of
-          the deployed contract and is deliberately not changed by this fork.
-          """
-          SYSTEM_TRANSACTION_GAS = ExecutionGas(Uint(30000000))
-          '''
-          s2, n = pattern.subn(new, s, count=1)
-          if n != 1:
-              raise SystemExit(f'expected one verified conflict block, found {n}')
-          p.write_text(s2)'''
+          start = s.index('<<<<<<< ')
+          end_marker = s.index('>>>>>>> ', start)
+          end = s.index('\\n', end_marker) + 1
+          block = s[start:end]
+          if 'SYSTEM_TRANSACTION_GAS' not in block or 'beacon roots ring buffer' not in block:
+              raise SystemExit('unexpected first conflict block')
+          new = "\\n".join([
+              '"""',
+              'Address of the beacon roots ring buffer contract. Its 8191-entry buffer',
+              'holds one root per slot, so its wall-clock coverage shrinks from ~27.3',
+              'hours to ~22.8 hours under 10-second slots. The buffer length is part of',
+              'the deployed contract and is deliberately not changed by this fork.',
+              '"""',
+              'SYSTEM_TRANSACTION_GAS = ExecutionGas(Uint(30000000))',
+          ]) + "\\n"
+          p.write_text(s[:start] + new + s[end:])'''
           p.write_text(s[:start] + replacement + s[end:])
           PY
           if git diff --quiet -- .github/workflows/eip8198-upstream-adapt.yml; then
