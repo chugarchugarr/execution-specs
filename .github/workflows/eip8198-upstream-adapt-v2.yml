@@ -21,6 +21,7 @@ jobs:
         run: |
           git config user.name "chugarchugarr"
           git config user.email "josephlerma19@gmail.com"
+          cp scripts/eip8198_upstream_adapt.py /tmp/eip8198_upstream_adapt.py
           git fetch origin eip8198-slot-time-agnostic-review
           git remote add upstream https://github.com/ethereum/execution-specs.git
           git fetch upstream forks/amsterdam
@@ -36,11 +37,11 @@ jobs:
           if [ "$rc" -ne 0 ]; then
             test "$(git diff --name-only --diff-filter=U)" = "src/ethereum/forks/amsterdam/fork.py"
             git checkout --conflict=diff3 -- src/ethereum/forks/amsterdam/fork.py
-            python scripts/eip8198_upstream_adapt.py --resolve-reference-conflict
+            python /tmp/eip8198_upstream_adapt.py --resolve-reference-conflict
             git add src/ethereum/forks/amsterdam/fork.py
             GIT_EDITOR=true git cherry-pick --continue
           fi
-          python scripts/eip8198_upstream_adapt.py "$OLD_HEAD"
+          python /tmp/eip8198_upstream_adapt.py "$OLD_HEAD"
           git add src/ethereum/forks/amsterdam/fork.py \
             src/ethereum/forks/amsterdam/slot_timing.py \
             src/ethereum/forks/amsterdam/vm/gas.py \
