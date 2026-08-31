@@ -1,0 +1,41 @@
+name: EIP-8198 upstream rebase diagnostic
+
+on:
+  push:
+    branches:
+      - ci/eip8198-upstream-rebase
+
+permissions:
+  contents: read
+
+jobs:
+  rebase-diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: eip8198-slot-time-agnostic-review
+          fetch-depth: 0
+      - name: Add upstream and fetch Amsterdam
+        run: |
+          git remote add upstream https://github.com/ethereum/execution-specs.git
+          git fetch upstream forks/amsterdam
+      - name: Reproduce rebase and report only actual conflicts
+        shell: bash
+        run: |
+          set +e
+          git rebase upstream/forks/amsterdam
+          rc=$?
+          echo "REBASE_EXIT=$rc"
+          echo "--- STATUS ---"
+          git status --short
+          echo "--- UNMERGED PATHS ---"
+          git diff --name-only --diff-filter=U
+          if [ "$rc" -ne 0 ]; then
+            for f in $(git diff --name-only --diff-filter=U); do
+              echo "===== CONFLICT: $f ====="
+              git checkout --conflict=diff3 -- "$f"
+              sed -n '/<<<<<<< /,/>>>>>>> /p' "$f" || true
+            done
+            exit 1
+          fi
