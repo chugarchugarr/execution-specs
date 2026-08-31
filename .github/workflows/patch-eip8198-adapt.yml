@@ -1,0 +1,64 @@
+name: Patch EIP-8198 adaptation workflow
+
+on:
+  push:
+    branches:
+      - ci/eip8198-upstream-rebase
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ci/eip8198-upstream-rebase
+      - name: Make conflict resolution marker-agnostic
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/eip8198-upstream-adapt.yml')
+          s = p.read_text()
+          anchor = "            git checkout --conflict=diff3 -- src/ethereum/forks/amsterdam/fork.py\n            python - <<'PY'\n"
+          if anchor not in s:
+              raise SystemExit(0)
+          start = s.index(anchor) + len(anchor)
+          end = s.index("\n          PY\n", start)
+          replacement = '''          from pathlib import Path
+          import re
+          p = Path('src/ethereum/forks/amsterdam/fork.py')
+          s = p.read_text()
+          pattern = re.compile(
+              r'<<<<<<< [^\\n]+\\n'
+              r'SYSTEM_TRANSACTION_GAS = ExecutionGas\\(Uint\\(30000000\\)\\)\\n'
+              r'.*?'
+              r'=======\\n'
+              r'"""\\nAddress of the beacon roots ring buffer contract\\..*?'
+              r'SYSTEM_TRANSACTION_GAS = Uint\\(30000000\\)\\n'
+              r'>>>>>>> [^\\n]+\\n',
+              re.S,
+          )
+          new = '''"""
+          Address of the beacon roots ring buffer contract. Its 8191-entry buffer
+          holds one root per slot, so its wall-clock coverage shrinks from ~27.3
+          hours to ~22.8 hours under 10-second slots. The buffer length is part of
+          the deployed contract and is deliberately not changed by this fork.
+          """
+          SYSTEM_TRANSACTION_GAS = ExecutionGas(Uint(30000000))
+          '''
+          s2, n = pattern.subn(new, s, count=1)
+          if n != 1:
+              raise SystemExit(f'expected one verified conflict block, found {n}')
+          p.write_text(s2)'''
+          p.write_text(s[:start] + replacement + s[end:])
+          PY
+          if git diff --quiet -- .github/workflows/eip8198-upstream-adapt.yml; then
+            exit 0
+          fi
+          git config user.name "chugarchugarr"
+          git config user.email "josephlerma19@gmail.com"
+          git add .github/workflows/eip8198-upstream-adapt.yml
+          git commit -m "ci: make EIP-8198 conflict parser marker-agnostic"
+          git push origin HEAD:ci/eip8198-upstream-rebase
