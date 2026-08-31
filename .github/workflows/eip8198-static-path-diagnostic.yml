@@ -28,3 +28,9 @@ jobs:
       - name: Upstream groupstats mypy
         if: always()
         run: uv run --group optimized mypy packages/testing/src/execution_testing/cli/show_pre_alloc_group_stats.py packages/testing/src/execution_testing/cli/tests/test_show_pre_alloc_group_stats.py
+      - name: Full-tree typecheck
+        if: always()
+        run: just typecheck
+      - name: Full-tree lint
+        if: always()
+        run: just lint
