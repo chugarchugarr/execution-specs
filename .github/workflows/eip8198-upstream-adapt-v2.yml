@@ -1,0 +1,77 @@
+name: EIP-8198 upstream adaptation v2
+
+on:
+  push:
+    branches:
+      - ci/eip8198-upstream-rebase
+
+permissions:
+  contents: write
+
+jobs:
+  adapt-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ci/eip8198-upstream-rebase
+          fetch-depth: 0
+      - name: Fetch protocol head and upstream
+        run: |
+          git config user.name "chugarchugarr"
+          git config user.email "josephlerma19@gmail.com"
+          git fetch origin eip8198-slot-time-agnostic-review
+          git remote add upstream https://github.com/ethereum/execution-specs.git
+          git fetch upstream forks/amsterdam
+          echo "OLD_HEAD=$(git rev-parse origin/eip8198-slot-time-agnostic-review)" >> "$GITHUB_ENV"
+          echo "UPSTREAM_HEAD=$(git rev-parse upstream/forks/amsterdam)" >> "$GITHUB_ENV"
+      - name: Replay reference and adapt to current architecture
+        run: |
+          git checkout -B rebased-eip8198-ready upstream/forks/amsterdam
+          set +e
+          git cherry-pick 0e8cc7fa0c49f7abfddde9e1f14a40bc54fd407c
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            test "$(git diff --name-only --diff-filter=U)" = "src/ethereum/forks/amsterdam/fork.py"
+            git checkout --conflict=diff3 -- src/ethereum/forks/amsterdam/fork.py
+            python scripts/eip8198_upstream_adapt.py --resolve-reference-conflict
+            git add src/ethereum/forks/amsterdam/fork.py
+            GIT_EDITOR=true git cherry-pick --continue
+          fi
+          python scripts/eip8198_upstream_adapt.py "$OLD_HEAD"
+          git add src/ethereum/forks/amsterdam/fork.py \
+            src/ethereum/forks/amsterdam/slot_timing.py \
+            src/ethereum/forks/amsterdam/vm/gas.py \
+            src/ethereum/forks/amsterdam/vm/instructions/environment.py \
+            tests/evm_tools/eip8198_quick_slots
+          git commit -m "feat(eip-8198): make slot-duration changes schedule-driven"
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.14"
+      - name: Format only changed Python files
+        run: |
+          uv run ruff format src/ethereum/forks/amsterdam/fork.py \
+            src/ethereum/forks/amsterdam/slot_timing.py \
+            src/ethereum/forks/amsterdam/vm/gas.py \
+            src/ethereum/forks/amsterdam/vm/instructions/environment.py \
+            tests/evm_tools/eip8198_quick_slots
+          if ! git diff --quiet; then
+            git add src/ethereum/forks/amsterdam/fork.py \
+              src/ethereum/forks/amsterdam/slot_timing.py \
+              src/ethereum/forks/amsterdam/vm/gas.py \
+              src/ethereum/forks/amsterdam/vm/instructions/environment.py \
+              tests/evm_tools/eip8198_quick_slots
+            git commit --amend --no-edit
+          fi
+      - name: Exact validation
+        run: |
+          just static
+          just spec-tools
+          uv run pytest -q tests/evm_tools/eip8198_quick_slots/test_additional_duration_era.py
+          test "$(git merge-base HEAD upstream/forks/amsterdam)" = "$UPSTREAM_HEAD"
+          git diff --check upstream/forks/amsterdam...HEAD
+          echo "REBASING_RESULT=$(git rev-parse HEAD)"
+      - name: Publish validated candidate
+        run: git push --force origin HEAD:refs/heads/rebased/eip8198-upstream-ready
