@@ -54,6 +54,7 @@ jobs:
           python /tmp/eip8198_upstream_adapt.py "$OLD_HEAD"
           python - <<'PY'
           from pathlib import Path
+          import re
 
           fork = Path('src/ethereum/forks/amsterdam/fork.py')
           s = fork.read_text()
@@ -87,17 +88,20 @@ jobs:
           if old not in s:
               raise SystemExit('gas slot timing import anchor missing')
           s = s.replace(old, new, 1)
-          old = '''    blob_gas_available = (
-              GasCosts.PER_BLOB * get_blob_schedule(block_env.slot_number).maximum
-              - block_output.blob_gas_used
-          )'''
-          new = '''    blob_gas_available = (
+          pattern = re.compile(
+              r'    blob_gas_available = \(\n'
+              r'\s*GasCosts\.PER_BLOB \* get_blob_schedule\(block_env\.slot_number\)\.maximum\n'
+              r'\s*- block_output\.blob_gas_used\n'
+              r'\s*\)'
+          )
+          replacement = '''    blob_gas_available = (
               get_max_blob_gas_per_block(block_env.slot_number)
               - block_output.blob_gas_used
           )'''
-          if old not in s:
-              raise SystemExit('gas capacity expression missing')
-          gas.write_text(s.replace(old, new, 1))
+          s2, n = pattern.subn(lambda _: replacement, s, count=1)
+          if n != 1:
+              raise SystemExit(f'expected one gas capacity expression, found {n}')
+          gas.write_text(s2)
 
           test = Path('tests/evm_tools/eip8198_quick_slots/test_slot_timing.py')
           s = test.read_text()
