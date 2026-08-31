@@ -1,0 +1,30 @@
+name: EIP-8198 static path diagnostic
+
+on:
+  push:
+    branches:
+      - ci/eip8198-upstream-rebase
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: e365a693a2149dbb46ae95b0544b034e67f33d12
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.14"
+      - name: Candidate ruff
+        if: always()
+        run: uv run ruff check src/ethereum/forks/amsterdam/fork.py src/ethereum/forks/amsterdam/slot_timing.py src/ethereum/forks/amsterdam/vm/gas.py src/ethereum/forks/amsterdam/vm/instructions/environment.py tests/evm_tools/eip8198_quick_slots
+      - name: Upstream groupstats ruff
+        if: always()
+        run: uv run ruff check packages/testing/src/execution_testing/cli/show_pre_alloc_group_stats.py packages/testing/src/execution_testing/cli/tests/test_show_pre_alloc_group_stats.py
+      - name: Candidate mypy
+        if: always()
+        run: uv run --group optimized mypy src/ethereum/forks/amsterdam/fork.py src/ethereum/forks/amsterdam/slot_timing.py src/ethereum/forks/amsterdam/vm/gas.py src/ethereum/forks/amsterdam/vm/instructions/environment.py
+      - name: Upstream groupstats mypy
+        if: always()
+        run: uv run --group optimized mypy packages/testing/src/execution_testing/cli/show_pre_alloc_group_stats.py packages/testing/src/execution_testing/cli/tests/test_show_pre_alloc_group_stats.py
