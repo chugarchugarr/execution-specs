@@ -1,0 +1,54 @@
+name: EIP-8198 refresh 3e59e29 exact validation
+
+on:
+  push:
+    branches:
+      - ci/eip8198-upstream-rebase
+
+jobs:
+  exact-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: e365a693a2149dbb46ae95b0544b034e67f33d12
+          fetch-depth: 0
+      - name: Fetch and pin Amsterdam base
+        run: |
+          git remote add upstream https://github.com/ethereum/execution-specs.git
+          git fetch upstream forks/amsterdam
+          test "$(git rev-parse upstream/forks/amsterdam)" = "3e59e29e41589bc3c2d6a0276fcc445531550a6b"
+          test "$(git merge-base HEAD upstream/forks/amsterdam)" = "3e59e29e41589bc3c2d6a0276fcc445531550a6b"
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.14"
+      - name: Exact static validation
+        run: just static
+      - name: Exact spec-tools validation
+        run: just spec-tools
+      - name: Exact focused EIP-8198 pytest
+        run: uv run pytest -q tests/evm_tools/eip8198_quick_slots/test_additional_duration_era.py
+      - name: Full EIP-8198 focused suite
+        run: uv run pytest -q tests/evm_tools/eip8198_quick_slots
+      - name: Verify clean diff
+        run: git diff --check upstream/forks/amsterdam...HEAD
+      - name: Verify exact changed-file set
+        shell: bash
+        run: |
+          actual="$(git diff --name-only upstream/forks/amsterdam...HEAD | sort)"
+          expected="$(printf '%s\n' \
+            src/ethereum/forks/amsterdam/fork.py \
+            src/ethereum/forks/amsterdam/slot_timing.py \
+            src/ethereum/forks/amsterdam/vm/gas.py \
+            src/ethereum/forks/amsterdam/vm/instructions/environment.py \
+            tests/evm_tools/eip8198_quick_slots/__init__.py \
+            tests/evm_tools/eip8198_quick_slots/test_additional_duration_era.py \
+            tests/evm_tools/eip8198_quick_slots/test_slot_timing.py \
+            tests/evm_tools/eip8198_quick_slots/test_vm_blob_schedule.py | sort)"
+          test "$actual" = "$expected"
+      - name: Record validated candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "e365a693a2149dbb46ae95b0544b034e67f33d12"
+          echo "VALIDATED_HEAD=e365a693a2149dbb46ae95b0544b034e67f33d12"
+          echo "VALIDATED_BASE=3e59e29e41589bc3c2d6a0276fcc445531550a6b"
