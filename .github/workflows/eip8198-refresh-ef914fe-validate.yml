@@ -1,0 +1,56 @@
+name: EIP-8198 refresh Amsterdam ef914fe exact validation
+
+on:
+  push:
+    branches:
+      - ci/eip8198-refresh-ef914fe-validate
+
+jobs:
+  exact-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: 4bef25e89530a6ea2fc46709db910d5b655b241b
+          fetch-depth: 0
+      - name: Fetch and pin Amsterdam base
+        run: |
+          git remote add upstream https://github.com/ethereum/execution-specs.git
+          git fetch upstream forks/amsterdam
+          test "$(git rev-parse upstream/forks/amsterdam)" = "ef914fe55dd252b60a718fec013ae2a6ee15054e"
+          test "$(git merge-base HEAD upstream/forks/amsterdam)" = "ef914fe55dd252b60a718fec013ae2a6ee15054e"
+          test "$(git rev-parse HEAD^)" = "ef914fe55dd252b60a718fec013ae2a6ee15054e"
+          test "$(git rev-list --count upstream/forks/amsterdam..HEAD)" = "1"
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.14"
+      - name: Exact static validation
+        run: just static
+      - name: Exact spec-tools validation
+        run: just spec-tools
+      - name: Exact focused EIP-8198 pytest
+        run: uv run pytest -q packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/test_additional_duration_era.py
+      - name: Full EIP-8198 focused suite
+        run: uv run pytest -q packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots
+      - name: Verify clean diff
+        run: git diff --check upstream/forks/amsterdam...HEAD
+      - name: Verify exact changed-file set
+        shell: bash
+        run: |
+          actual="$(git diff --name-only upstream/forks/amsterdam...HEAD | sort)"
+          expected="$(printf '%s\n' \
+            packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/__init__.py \
+            packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/test_additional_duration_era.py \
+            packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/test_slot_timing.py \
+            packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/test_vm_blob_schedule.py \
+            src/ethereum/forks/amsterdam/fork.py \
+            src/ethereum/forks/amsterdam/slot_timing.py \
+            src/ethereum/forks/amsterdam/vm/gas.py \
+            src/ethereum/forks/amsterdam/vm/instructions/environment.py | sort)"
+          test "$actual" = "$expected"
+      - name: Record validated candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "4bef25e89530a6ea2fc46709db910d5b655b241b"
+          echo "VALIDATED_HEAD=4bef25e89530a6ea2fc46709db910d5b655b241b"
+          echo "VALIDATED_BASE=ef914fe55dd252b60a718fec013ae2a6ee15054e"
