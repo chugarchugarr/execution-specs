@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  TARGET_SHA: ce754359c70bb3888ebacb3c97af95828d219e4e
+  TARGET_SHA: 47edf9284f46c88d2a226a2c8b56d5602aaafe35
 
 jobs:
   provenance:
