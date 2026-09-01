@@ -12,14 +12,14 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: f06d972f496ca9325559f840db45a10cfd6f86e1
+          ref: 82acb3e5559fa1e18559ac12fd097cc62f8260d1
           fetch-depth: 0
       - name: Fetch and pin Amsterdam base
         run: |
           git remote add upstream https://github.com/ethereum/execution-specs.git
           git fetch upstream forks/amsterdam
-          test "$(git rev-parse upstream/forks/amsterdam)" = "6eb68ed3e611a25c8d96292ec61e0aee37f894b4"
-          test "$(git merge-base HEAD upstream/forks/amsterdam)" = "6eb68ed3e611a25c8d96292ec61e0aee37f894b4"
+          test "$(git rev-parse upstream/forks/amsterdam)" = "e5b6e3b5ccd68eb47f2cba35da16cd2b240cb8b8"
+          test "$(git merge-base HEAD upstream/forks/amsterdam)" = "e5b6e3b5ccd68eb47f2cba35da16cd2b240cb8b8"
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.14"
@@ -49,6 +49,6 @@ jobs:
           test "$actual" = "$expected"
       - name: Record validated candidate
         run: |
-          test "$(git rev-parse HEAD)" = "f06d972f496ca9325559f840db45a10cfd6f86e1"
-          echo "VALIDATED_HEAD=f06d972f496ca9325559f840db45a10cfd6f86e1"
-          echo "VALIDATED_BASE=6eb68ed3e611a25c8d96292ec61e0aee37f894b4"
+          test "$(git rev-parse HEAD)" = "82acb3e5559fa1e18559ac12fd097cc62f8260d1"
+          echo "VALIDATED_HEAD=82acb3e5559fa1e18559ac12fd097cc62f8260d1"
+          echo "VALIDATED_BASE=e5b6e3b5ccd68eb47f2cba35da16cd2b240cb8b8"
