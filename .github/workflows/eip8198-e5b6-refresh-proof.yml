@@ -1,0 +1,30 @@
+name: eip8198-e5b6-refresh-proof
+
+on:
+  push:
+    branches:
+      - ci/eip8198-e5b6-refresh-proof
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: 82acb3e5559fa1e18559ac12fd097cc62f8260d1
+      - uses: ./.github/actions/setup-uv
+      - name: Install just
+        uses: taiki-e/install-action@e24b8b7a939c6a537188f34a4163cb153dd85cf6
+        with:
+          tool: just@1.46
+      - name: Static checks
+        run: just static
+      - name: Spec tools
+        run: just spec-tools
+      - name: Focused additional-duration proof
+        run: uv run pytest -q tests/evm_tools/eip8198_quick_slots/test_additional_duration_era.py
+      - name: Full EIP-8198 proof suite
+        run: uv run pytest -q tests/evm_tools/eip8198_quick_slots
