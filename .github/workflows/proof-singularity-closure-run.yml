@@ -57,15 +57,6 @@ jobs:
           if 'fiat_shamir.workspace = true' not in s:
               s = s.replace('[dependencies]\n', '[dependencies]\nfiat_shamir.workspace = true\n', 1)
           p.write_text(s)
-
-          p = Path('leanVM/crates/rec_aggregation/examples/ps_arbitrary_verify_sub.rs')
-          s = p.read_text()
-          old_prog = 'let mut inner = program("def main():\\n    x = 1\\n    x[1] = GEN\\n    x[GEN] = x[1] * GEN\\n    return\\n");'
-          new_prog = 'let mut inner = program("def main():\\n    return\\n");'
-          assert old_prog in s
-          s = s.replace(old_prog, new_prog, 1)
-          s = s.replace('let public = [F192::new(7, 0, 0), F192::new(11, 0, 0)];', 'let public = [F192::ZERO, F192::ZERO];', 1)
-          p.write_text(s)
           PY
 
       - name: Prove standalone ProgramVK WHIR verifier in-circuit
