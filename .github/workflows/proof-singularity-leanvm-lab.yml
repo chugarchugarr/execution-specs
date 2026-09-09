@@ -57,6 +57,169 @@ jobs:
         working-directory: leanVM
         run: cargo run --release -p rec_aggregation --example ps_vk
 
+      - name: Add authenticated ProgramVK / bytecode-opening probe
+        working-directory: leanVM
+        run: |
+          cat > crates/rec_aggregation/examples/ps_program_vk.rs <<'RS'
+          use fiat_shamir::transcript::{ProverState, Receiver, Transmitter, VerifierState};
+          use lean_compiler::{compile, parse};
+          use lean_vm::cpu::{fs_seed, layout::bytecode_table, Program};
+          use pcs::whir::{
+              build_eq_table_ext, commit, config_for_rate, inner_product_base_ext,
+              recursive_prover_with_basis, recursive_verifier_with_basis_succinct,
+          };
+          use primitives::{field::{F64, F192}, hash::Hasher, multilinear::eq_eval};
+
+          const LABEL: &[u8] = b"eip8288/leanvm-program-vk/v1";
+          const LOG_INV_RATE: usize = 1;
+          const MIN_LOG_N: usize = 18;
+
+          #[derive(Clone)]
+          struct ProgramVk {
+              fs_seed: [F192; 2],
+              bytecode_root: [u8; 32],
+              bytecode_log_n: usize,
+              log_inv_rate: usize,
+              vk_hash: [u8; 32],
+          }
+
+          fn seed_bytes(seed: [F192; 2]) -> [u8; 32] {
+              let mut out = [0u8; 32];
+              out[0..8].copy_from_slice(&seed[0].c0.to_le_bytes());
+              out[8..16].copy_from_slice(&seed[0].c1.to_le_bytes());
+              out[16..24].copy_from_slice(&seed[1].c0.to_le_bytes());
+              out[24..32].copy_from_slice(&seed[1].c1.to_le_bytes());
+              out
+          }
+
+          fn vk_hash(seed: [F192; 2], root: &[u8; 32], log_n: usize, log_inv_rate: usize) -> [u8; 32] {
+              let mut h = Hasher::new();
+              h.update(b"eip8288/leanvm-program-vk/v1");
+              h.update(&seed_bytes(seed));
+              h.update(root);
+              h.update(&(log_n as u64).to_le_bytes());
+              h.update(&(log_inv_rate as u64).to_le_bytes());
+              h.finalize()
+          }
+
+          fn program(source: &str) -> Program {
+              compile(&parse(source).expect("program parses"))
+          }
+
+          fn padded_bytecode(program: &Program) -> (Vec<F64>, usize) {
+              let mut table = bytecode_table(&program.prog);
+              let n = table.len().next_power_of_two().max(1usize << MIN_LOG_N);
+              table.resize(n, F64::ZERO);
+              (table, n.trailing_zeros() as usize)
+          }
+
+          fn challenge_point(log_n: usize) -> Vec<F192> {
+              (0..log_n)
+                  .map(|i| F192::new((i as u64) + 1, ((i as u64) + 1).rotate_left(17), 0))
+                  .collect()
+          }
+
+          fn prove_program_opening(program: &Program) -> (ProgramVk, Vec<F192>, F192, fiat_shamir::transcript::Proof) {
+              let seed = fs_seed(program);
+              let (table, log_n) = padded_bytecode(program);
+              let config = config_for_rate(log_n, LOG_INV_RATE).expect("production WHIR config");
+              let point = challenge_point(log_n);
+              let basis = build_eq_table_ext(&point);
+              let target = inner_product_base_ext(&table, &basis);
+              let (commitment, pd) = commit(&table, log_n, config.initial_k, config.log_inv_rates[0]);
+              let root = commitment.root;
+              let vk = ProgramVk {
+                  fs_seed: seed,
+                  bytecode_root: root,
+                  bytecode_log_n: log_n,
+                  log_inv_rate: LOG_INV_RATE,
+                  vk_hash: vk_hash(seed, &root, log_n, LOG_INV_RATE),
+              };
+
+              let mut ps = ProverState::from_label(LABEL);
+              ps.add_root(&root);
+              ps.add_scalar(seed[0]);
+              ps.add_scalar(seed[1]);
+              for &x in &point {
+                  ps.add_scalar(x);
+              }
+              ps.add_scalar(target);
+              recursive_prover_with_basis(
+                  &config,
+                  log_n,
+                  &table,
+                  zk_alloc::ArenaVec::from_slice(&basis),
+                  target,
+                  &pd.codeword,
+                  &pd.merkle_tree,
+                  &mut ps,
+              );
+              (vk, point, target, ps.into_proof())
+          }
+
+          fn verify_program_opening(vk: &ProgramVk, expected_point: &[F192], expected_value: F192, proof: &fiat_shamir::transcript::Proof) -> bool {
+              let Ok(config) = config_for_rate(vk.bytecode_log_n, vk.log_inv_rate) else { return false; };
+              let mut vs = VerifierState::from_label(LABEL, proof);
+              let Ok(root) = vs.next_root() else { return false; };
+              if root != vk.bytecode_root { return false; }
+              let Ok(seed0) = vs.next_scalar() else { return false; };
+              let Ok(seed1) = vs.next_scalar() else { return false; };
+              if [seed0, seed1] != vk.fs_seed { return false; }
+              let mut point = Vec::with_capacity(vk.bytecode_log_n);
+              for _ in 0..vk.bytecode_log_n {
+                  let Ok(x) = vs.next_scalar() else { return false; };
+                  point.push(x);
+              }
+              if point != expected_point { return false; }
+              let Ok(value) = vs.next_scalar() else { return false; };
+              if value != expected_value { return false; }
+              let verdict = recursive_verifier_with_basis_succinct(
+                  &config,
+                  vk.bytecode_log_n,
+                  1usize << config.initial_k,
+                  value,
+                  &root,
+                  |fold_point| eq_eval(&point, fold_point),
+                  &mut vs,
+              );
+              verdict.is_ok() && vs.finish().is_ok()
+          }
+
+          fn hex(bytes: &[u8]) -> String {
+              bytes.iter().map(|b| format!("{b:02x}")).collect()
+          }
+
+          fn main() {
+              let a = program("def main():\n    p = 1\n    p[1] = 1\n    return\n");
+              let b = program("def main():\n    p = 1\n    p[1] = GEN\n    return\n");
+              let (vk_a, point_a, value_a, proof_a) = prove_program_opening(&a);
+              let (vk_b, _, _, _) = prove_program_opening(&b);
+
+              assert!(verify_program_opening(&vk_a, &point_a, value_a, &proof_a));
+              assert_ne!(vk_a.bytecode_root, vk_b.bytecode_root, "different programs must have different WHIR roots");
+              assert_ne!(vk_a.vk_hash, vk_b.vk_hash, "different programs must have different EIP-8288 VK hashes");
+              assert!(!verify_program_opening(&vk_b, &point_a, value_a, &proof_a), "program/VK substitution must fail");
+              let mut wrong_point = point_a.clone();
+              wrong_point[0] += F192::ONE;
+              assert!(!verify_program_opening(&vk_a, &wrong_point, value_a, &proof_a), "point substitution must fail");
+              assert!(!verify_program_opening(&vk_a, &point_a, value_a + F192::ONE, &proof_a), "evaluation substitution must fail");
+
+              println!("PROGRAM_A_VK_HASH={}", hex(&vk_a.vk_hash));
+              println!("PROGRAM_A_BYTECODE_ROOT={}", hex(&vk_a.bytecode_root));
+              println!("PROGRAM_B_VK_HASH={}", hex(&vk_b.vk_hash));
+              println!("PROGRAM_B_BYTECODE_ROOT={}", hex(&vk_b.bytecode_root));
+              println!("PROGRAM_VK_OPENING_PASS=true");
+              println!("PROGRAM_SUBSTITUTION_REJECTED=true");
+              println!("POINT_SUBSTITUTION_REJECTED=true");
+              println!("EVALUATION_SUBSTITUTION_REJECTED=true");
+              println!("PROGRAM_BYTECODE_LOG_N={}", vk_a.bytecode_log_n);
+          }
+          RS
+
+      - name: Compile and prove authenticated ProgramVK bytecode opening
+        working-directory: leanVM
+        run: cargo run --release -p rec_aggregation --example ps_program_vk
+
       - name: Run recursion smoke test
         working-directory: leanVM
         env:
