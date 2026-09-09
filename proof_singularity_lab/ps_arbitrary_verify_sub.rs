@@ -28,7 +28,6 @@ fn seed_bytes(seed: [F192; 2]) -> [u8; 32] {
     out
 }
 fn f192(x: F192) -> String { format!("f192({},{},{})", x.c0, x.c1, x.c2) }
-fn f192s(xs: &[F192]) -> String { format!("[{}]", xs.iter().copied().map(f192).collect::<Vec<_>>().join(",")) }
 fn program(source: &str) -> Program { compile(&parse(source).expect("program parses")) }
 
 fn vk_hash(seed: [F192; 2], root: &[u8; 32], inner_vars: usize) -> [u8; 32] {
@@ -75,11 +74,11 @@ fn opening_for(table: &[F64], seed: [F192; 2], point: &[F192], value: F192) -> (
 }
 
 fn main() {
-    // Deliberately NOT the aggregation guest: this is the max-disagreement test
-    // for whether current verify_sub is truly program-generic at a fixed bytecode shape.
-    let mut inner = program("def main():\n    x = 1\n    x[1] = GEN\n    x[GEN] = x[1] * GEN\n    return\n");
+    // Deliberately NOT the aggregation guest: max-disagreement test for whether
+    // current verify_sub is program-generic once its exact layout replacements/hints are supplied.
+    let mut inner = program("def main():\n    return\n");
     inner.min_log_committed = 22;
-    let public = [F192::new(7, 0, 0), F192::new(11, 0, 0)];
+    let public = [F192::ZERO, F192::ZERO];
     let (inner_proof, _) = prove(&inner, public, LOG_INV_RATE);
     let summary = verify(&inner, &public, &inner_proof).expect("native arbitrary-program proof verifies");
     let (sub_hints, bc_point, bc_value) = ps_gen_verify(&inner, public, summary).expect("derive exact verify_sub witness");
@@ -90,8 +89,6 @@ fn main() {
     assert!(table.len() <= 1usize << PROGRAM_VK_LOG_N);
     table.resize(1usize << PROGRAM_VK_LOG_N, F64::ZERO);
 
-    // Padding appends zero halves. Determine and assert the unique coordinate embedding
-    // that preserves the exact deferred claim, then bake only that rule into the guest.
     let mut point_append = bc_point.clone();
     point_append.resize(PROGRAM_VK_LOG_N, F192::ZERO);
     let mut point_prepend = vec![F192::ZERO; PROGRAM_VK_LOG_N - bc_point.len()];
@@ -144,7 +141,6 @@ def main():
     defer = HeapBuf(DEFER_SIZE)
     verify_sub(PS_PI_0, PS_PI_1, PS_SEED_0, PS_SEED_1, g_logs_pow2, g_squares, defer)
 
-    # Replay ProgramVK WHIR transcript from the exact deferred bytecode claim.
     fs = StackBuf(2)
     fs[0] = PS_LABEL_0
     fs[1] = PS_LABEL_1
@@ -186,10 +182,27 @@ def main():
     let repl = placeholder_map(kbc);
     let ast = parse_with_replacements(&src, &repl).expect("generic direct-verifier guest parses");
     let mut guest = compile(&ast);
-    for (name, vals) in sub_hints { guest.set_witness(name, vec![vals]); }
+
+    // hint_witness streams are consumed FIFO by NAME. verify_sub and open_stacked
+    // intentionally share the production Merkle hint names, so preserve the
+    // inner proof's first entry and append ProgramVK's opening as the second.
+    let mut had_rows = false;
+    let mut had_paths = false;
+    for (name, vals) in sub_hints {
+        match name {
+            "merkle_leaf_rows" => {
+                guest.set_witness(name, vec![vals, opening_rows.clone()]);
+                had_rows = true;
+            }
+            "merkle_paths" => {
+                guest.set_witness(name, vec![vals, opening_paths.clone()]);
+                had_paths = true;
+            }
+            _ => guest.set_witness(name, vec![vals]),
+        }
+    }
+    assert!(had_rows && had_paths, "verify_sub must provide its authenticated Merkle hints");
     guest.set_witness("ps_vk_stream", vec![opening_suffix]);
-    guest.set_witness("merkle_leaf_rows", vec![opening_rows]);
-    guest.set_witness("merkle_paths", vec![opening_paths]);
 
     let outer_public = [F192::ZERO, F192::ZERO];
     let (proof, _) = prove(&guest, outer_public, LOG_INV_RATE);
