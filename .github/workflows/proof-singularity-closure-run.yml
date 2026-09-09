@@ -29,6 +29,7 @@ jobs:
 
       - name: Install closure probe into leanVM
         run: |
+          mkdir -p leanVM/crates/rec_aggregation/examples
           cp proof_singularity_lab/ps_in_circuit_program_vk.rs leanVM/crates/rec_aggregation/examples/ps_in_circuit_program_vk.rs
           python - <<'PY'
           from pathlib import Path
