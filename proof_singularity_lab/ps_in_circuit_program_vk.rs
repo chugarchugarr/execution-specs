@@ -182,7 +182,11 @@ AUX_VALUE = {value}
         point = f192_list(&point),
         value = f192_literal(value),
     );
-    let first_def = src.find("\ndef ").expect("production guest has top-level defs") + 1;
+    let first_def = [src.find("\n@"), src.find("\ndef ")]
+        .into_iter()
+        .flatten()
+        .min()
+        .expect("production guest has top-level functions") + 1;
     src.insert_str(first_def, &aux_consts);
 
     src.push_str(r#"
