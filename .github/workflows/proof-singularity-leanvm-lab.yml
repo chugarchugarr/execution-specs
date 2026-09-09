@@ -1,0 +1,64 @@
+name: Proof Singularity leanVM lab
+
+on:
+  push:
+    branches:
+      - lab/proof-singularity-ci
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout lab branch
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned leanVM
+        uses: actions/checkout@v4
+        with:
+          repository: leanEthereum/leanVM
+          ref: 2b7ca3b4f78f1e5020f9ebf2be2bf7981fb9a89f
+          path: leanVM
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Print toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Add AGGREGATED_VK probe
+        working-directory: leanVM
+        run: |
+          mkdir -p crates/rec_aggregation/examples
+          cat > crates/rec_aggregation/examples/ps_vk.rs <<'RS'
+          use lean_vm::cpu::fs_seed;
+          use rec_aggregation::aggregation::unified_guest;
+
+          fn main() {
+              let seed = fs_seed(unified_guest());
+              let mut out = [0u8; 32];
+              out[0..8].copy_from_slice(&seed[0].c0.to_le_bytes());
+              out[8..16].copy_from_slice(&seed[0].c1.to_le_bytes());
+              out[16..24].copy_from_slice(&seed[1].c0.to_le_bytes());
+              out[24..32].copy_from_slice(&seed[1].c1.to_le_bytes());
+              println!("CURRENT_UNIFIED_GUEST_FS_SEED={}", out.iter().map(|b| format!("{b:02x}")).collect::<String>());
+              println!("CURRENT_UNIFIED_GUEST_LOG={}", unified_guest().prog.len().trailing_zeros());
+              println!("CURRENT_UNIFIED_GUEST_INSTRUCTIONS={}", unified_guest().prog.len());
+          }
+          RS
+
+      - name: Compile and derive current guest identity
+        working-directory: leanVM
+        run: cargo run --release -p rec_aggregation --example ps_vk
+
+      - name: Run recursion smoke test
+        working-directory: leanVM
+        env:
+          ZK_ALLOC_POISON: "1"
+        run: cargo test --release -p rec_aggregation aggregate_two_to_one -- --nocapture
