@@ -1,0 +1,53 @@
+name: Proof Singularity closure run
+
+on:
+  push:
+    branches:
+      - lab/proof-singularity-ci
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  closure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout lab branch
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned leanVM
+        uses: actions/checkout@v4
+        with:
+          repository: leanEthereum/leanVM
+          ref: 2b7ca3b4f78f1e5020f9ebf2be2bf7981fb9a89f
+          path: leanVM
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install closure probe into leanVM
+        run: |
+          cp proof_singularity_lab/ps_in_circuit_program_vk.rs leanVM/crates/rec_aggregation/examples/ps_in_circuit_program_vk.rs
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('leanVM/crates/rec_aggregation/src/aggregation.rs')
+          s = p.read_text()
+          old = 'fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {'
+          new = 'pub fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {'
+          assert old in s
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('leanVM/crates/rec_aggregation/Cargo.toml')
+          s = p.read_text()
+          if 'fiat_shamir.workspace = true' not in s:
+              s = s.replace('[dependencies]\n', '[dependencies]\nfiat_shamir.workspace = true\n', 1)
+              p.write_text(s)
+          PY
+
+      - name: Compile, prove, and verify in-circuit ProgramVK closure
+        working-directory: leanVM
+        env:
+          ZK_ALLOC_POISON: "1"
+        run: cargo run --release -p rec_aggregation --example ps_in_circuit_program_vk
