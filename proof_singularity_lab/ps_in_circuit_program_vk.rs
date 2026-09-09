@@ -155,8 +155,8 @@ fn main() {
 
     let base_src = include_str!("../guests/lean_ethereum.py");
     let mut src = base_src.replacen("def main():", "def aggregation_main():", 1);
-    src.push_str(&format!(r#"
 
+    let aux_consts = format!(r#"
 # ================= EIP-8288 ProgramVK bytecode-opening closure lab =================
 AUX_LOG_N = {log_n}
 AUX_M_IDX = 0
@@ -169,6 +169,23 @@ AUX_SEED_0 = {seed0}
 AUX_SEED_1 = {seed1}
 AUX_POINT = {point}
 AUX_VALUE = {value}
+
+"#,
+        log_n = LOG_N,
+        stream_cap = suffix.len(),
+        label0 = f192_literal(label_state[0]),
+        label1 = f192_literal(label_state[1]),
+        root0 = f192_literal(root_cells[0]),
+        root1 = f192_literal(root_cells[1]),
+        seed0 = f192_literal(seed[0]),
+        seed1 = f192_literal(seed[1]),
+        point = f192_list(&point),
+        value = f192_literal(value),
+    );
+    let first_def = src.find("\ndef ").expect("production guest has top-level defs") + 1;
+    src.insert_str(first_def, &aux_consts);
+
+    src.push_str(r#"
 
 def main():
     fs = StackBuf(2)
@@ -191,18 +208,7 @@ def main():
         eq *= (1 + AUX_POINT[k] + point_fold[GEN ** k])
     assert (inner_total + eq) * yr_at_tail == sumcheck_target
     return
-"#,
-        log_n = LOG_N,
-        stream_cap = suffix.len(),
-        label0 = f192_literal(label_state[0]),
-        label1 = f192_literal(label_state[1]),
-        root0 = f192_literal(root_cells[0]),
-        root1 = f192_literal(root_cells[1]),
-        seed0 = f192_literal(seed[0]),
-        seed1 = f192_literal(seed[1]),
-        point = f192_list(&point),
-        value = f192_literal(value),
-    ));
+"#);
 
     let replacements = placeholder_map(19);
     let ast = parse_with_replacements(&src, &replacements).expect("custom PS guest parses");
