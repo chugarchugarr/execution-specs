@@ -1,0 +1,292 @@
+name: Proof Singularity in-circuit closure
+
+on:
+  push:
+    branches:
+      - lab/proof-singularity-ci
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  close-program-vk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: leanEthereum/leanVM
+          ref: 2b7ca3b4f78f1e5020f9ebf2be2bf7981fb9a89f
+          path: leanVM
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Expose current placeholder map to the lab example
+        working-directory: leanVM
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('crates/rec_aggregation/src/aggregation.rs')
+          s = p.read_text()
+          old = 'fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {'
+          new = 'pub fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {'
+          assert old in s
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+      - name: Add native and in-circuit ProgramVK closure probe
+        working-directory: leanVM
+        run: |
+          mkdir -p crates/rec_aggregation/examples
+          cat > crates/rec_aggregation/examples/ps_in_circuit_program_vk.rs <<'RS'
+          use lean_compiler::{compile, parse, parse_with_replacements};
+          use lean_vm::cpu::{fs_seed, layout::bytecode_table, prove, verify, Program};
+          use lean_vm::transcript::{FiatShamirState, ProverState, Receiver, Transmitter, VerifierState};
+          use pcs::whir::{
+              build_eq_table_ext, commit, config_for_rate, inner_product_base_ext,
+              recursive_prover_with_basis, recursive_verifier_with_basis_succinct,
+          };
+          use primitives::{field::{F64, F192}, hash::Hasher, multilinear::eq_eval};
+          use rec_aggregation::aggregation::placeholder_map;
+
+          const LABEL: &[u8] = b"eip8288/leanvm-program-vk/v1";
+          const LOG_N: usize = 22;
+          const LOG_INV_RATE: usize = 1;
+          const PREFIX_SCALARS: usize = 2 + 2 + LOG_N + 1;
+
+          fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
+              let word_at = |offset: usize| u64::from_le_bytes(hash[offset..offset + 8].try_into().unwrap());
+              [
+                  F192::new(word_at(0), word_at(8), 0),
+                  F192::new(word_at(16), word_at(24), 0),
+              ]
+          }
+
+          fn pack_state(state: [F64; 4]) -> [F192; 2] {
+              [
+                  F192::new(state[0].0, state[1].0, 0),
+                  F192::new(state[2].0, state[3].0, 0),
+              ]
+          }
+
+          fn seed_bytes(seed: [F192; 2]) -> [u8; 32] {
+              let mut out = [0u8; 32];
+              out[0..8].copy_from_slice(&seed[0].c0.to_le_bytes());
+              out[8..16].copy_from_slice(&seed[0].c1.to_le_bytes());
+              out[16..24].copy_from_slice(&seed[1].c0.to_le_bytes());
+              out[24..32].copy_from_slice(&seed[1].c1.to_le_bytes());
+              out
+          }
+
+          fn f192_literal(x: F192) -> String {
+              format!("f192({},{},{})", x.c0, x.c1, x.c2)
+          }
+
+          fn f192_list(xs: &[F192]) -> String {
+              format!("[{}]", xs.iter().copied().map(f192_literal).collect::<Vec<_>>().join(","))
+          }
+
+          fn program(source: &str) -> Program {
+              compile(&parse(source).expect("program parses"))
+          }
+
+          fn challenge_point() -> Vec<F192> {
+              (0..LOG_N)
+                  .map(|i| F192::new((i as u64) + 1, ((i as u64) + 1).rotate_left(17), 0))
+                  .collect()
+          }
+
+          fn bytecode_table_22(program: &Program) -> Vec<F64> {
+              let mut table = bytecode_table(&program.prog);
+              assert!(table.len() <= 1usize << LOG_N);
+              table.resize(1usize << LOG_N, F64::ZERO);
+              table
+          }
+
+          fn program_vk_hash(seed: [F192; 2], root: &[u8; 32]) -> [u8; 32] {
+              let mut h = Hasher::new();
+              h.update(b"eip8288/leanvm-program-vk/v1");
+              h.update(&seed_bytes(seed));
+              h.update(root);
+              h.update(&(LOG_N as u64).to_le_bytes());
+              h.update(&(LOG_INV_RATE as u64).to_le_bytes());
+              h.finalize()
+          }
+
+          fn make_opening(program: &Program) -> ([F192; 2], [u8; 32], Vec<F192>, F192, lean_vm::transcript::Proof) {
+              let seed = fs_seed(program);
+              let table = bytecode_table_22(program);
+              let config = config_for_rate(LOG_N, LOG_INV_RATE).expect("supported WHIR config");
+              let point = challenge_point();
+              let basis = build_eq_table_ext(&point);
+              let value = inner_product_base_ext(&table, &basis);
+              let (commitment, pd) = commit(&table, LOG_N, config.initial_k, config.log_inv_rates[0]);
+              let root = commitment.root;
+
+              let mut ps = ProverState::from_label(LABEL);
+              ps.add_root(&root);
+              ps.add_scalar(seed[0]);
+              ps.add_scalar(seed[1]);
+              for &x in &point { ps.add_scalar(x); }
+              ps.add_scalar(value);
+              recursive_prover_with_basis(
+                  &config,
+                  LOG_N,
+                  &table,
+                  zk_alloc::ArenaVec::from_slice(&basis),
+                  value,
+                  &pd.codeword,
+                  &pd.merkle_tree,
+                  &mut ps,
+              );
+              (seed, root, point, value, ps.into_proof())
+          }
+
+          fn verify_and_raw(
+              seed: [F192; 2],
+              root: [u8; 32],
+              point: &[F192],
+              value: F192,
+              proof: &lean_vm::transcript::Proof,
+          ) -> fiat_shamir::transcript::RawProof {
+              let config = config_for_rate(LOG_N, LOG_INV_RATE).unwrap();
+              let mut vs = VerifierState::from_label(LABEL, proof);
+              assert_eq!(vs.next_root().unwrap(), root);
+              assert_eq!(vs.next_scalar().unwrap(), seed[0]);
+              assert_eq!(vs.next_scalar().unwrap(), seed[1]);
+              for &x in point { assert_eq!(vs.next_scalar().unwrap(), x); }
+              assert_eq!(vs.next_scalar().unwrap(), value);
+              assert!(recursive_verifier_with_basis_succinct(
+                  &config,
+                  LOG_N,
+                  1usize << config.initial_k,
+                  value,
+                  &root,
+                  |fold_point| eq_eval(point, fold_point),
+                  &mut vs,
+              ).is_ok());
+              vs.finish().unwrap();
+              vs.into_raw_proof()
+          }
+
+          fn main() {
+              // Two different LeanVM programs: first is the proved program; second is a substitution adversary.
+              let p = program("def main():\n    x = 1\n    x[1] = GEN\n    return\n");
+              let q = program("def main():\n    x = 1\n    x[1] = GEN * GEN\n    return\n");
+              let (seed, root, point, value, opening) = make_opening(&p);
+              let raw = verify_and_raw(seed, root, &point, value, &opening);
+              assert!(raw.stream.len() >= PREFIX_SCALARS);
+
+              let q_table = bytecode_table_22(&q);
+              let q_config = config_for_rate(LOG_N, LOG_INV_RATE).unwrap();
+              let (q_commitment, _) = commit(&q_table, LOG_N, q_config.initial_k, q_config.log_inv_rates[0]);
+              let q_seed = fs_seed(&q);
+              let vk = program_vk_hash(seed, &root);
+              let q_vk = program_vk_hash(q_seed, &q_commitment.root);
+              assert_ne!(vk, q_vk, "different programs need different ProgramVK hashes");
+
+              // Convert the already accepted native WHIR proof to the exact raw hint shape used by lean_ethereum.py.
+              let mut leaf_rows = Vec::<F192>::new();
+              let mut paths = Vec::<F192>::new();
+              for opening in &raw.merkle {
+                  leaf_rows.extend(opening.leaf_data.iter().map(|x| F192::new(x.0, 0, 0)));
+                  for h in &opening.path { paths.extend_from_slice(&pack_hash_state(h)); }
+              }
+              let suffix = raw.stream[PREFIX_SCALARS..].to_vec();
+              let root_cells = pack_hash_state(&root);
+              let label_state = pack_state(FiatShamirState::from_label(LABEL).state());
+
+              // Reuse the production recursion guest's own WHIR verifier rather than introducing a second PCS.
+              let base_src = include_str!("../guests/lean_ethereum.py");
+              let mut src = base_src.replacen("def main():", "def aggregation_main():", 1);
+              src.push_str(&format!(r#"
+
+# ================= EIP-8288 ProgramVK bytecode-opening closure lab =================
+AUX_LOG_N = {log_n}
+AUX_M_IDX = 0
+AUX_STREAM_CAP = {stream_cap}
+AUX_LABEL_0 = {label0}
+AUX_LABEL_1 = {label1}
+AUX_ROOT_0 = {root0}
+AUX_ROOT_1 = {root1}
+AUX_SEED_0 = {seed0}
+AUX_SEED_1 = {seed1}
+AUX_POINT = {point}
+AUX_VALUE = {value}
+
+def main():
+    # Reconstruct exactly the native ProgramVK-opening transcript prefix from constrained values.
+    fs = StackBuf(2)
+    fs[0] = AUX_LABEL_0
+    fs[1] = AUX_LABEL_1
+    fs = obs(fs, AUX_ROOT_0)
+    fs = obs(fs, AUX_ROOT_1)
+    fs = obs(fs, AUX_SEED_0)
+    fs = obs(fs, AUX_SEED_1)
+    for k in unroll(0, AUX_LOG_N):
+        fs = obs(fs, AUX_POINT[k])
+    fs = obs(fs, AUX_VALUE)
+
+    stream = HeapBuf(AUX_STREAM_CAP)
+    hint_witness(stream[0:AUX_STREAM_CAP], "aux_stream")
+    sumcheck_target, point_fold, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, point_tail, yr_at_tail = open_stacked(AUX_M_IDX, fs[0], fs[1], AUX_VALUE, AUX_ROOT_0, AUX_ROOT_1, stream)
+
+    # The single opening claim is MLE(bytecode_table(program), AUX_POINT) == AUX_VALUE.
+    # open_stacked returns the terminal point in witness-coordinate order, matching the native verifier's rotation.
+    eq = GEN ** 0
+    for k in unroll(0, AUX_LOG_N):
+        eq *= (1 + AUX_POINT[k] + point_fold[GEN ** k])
+    assert (inner_total + eq) * yr_at_tail == sumcheck_target
+    return
+"#,
+                  log_n = LOG_N,
+                  stream_cap = suffix.len(),
+                  label0 = f192_literal(label_state[0]),
+                  label1 = f192_literal(label_state[1]),
+                  root0 = f192_literal(root_cells[0]),
+                  root1 = f192_literal(root_cells[1]),
+                  seed0 = f192_literal(seed[0]),
+                  seed1 = f192_literal(seed[1]),
+                  point = f192_list(&point),
+                  value = f192_literal(value),
+              ));
+
+              // Current guest WHIR dispatch starts at m=22; rate=1,m=22 is candidate index 0.
+              let replacements = placeholder_map(19);
+              let ast = parse_with_replacements(&src, &replacements).expect("custom PS guest parses");
+              let mut guest = compile(&ast);
+              guest.set_witness("aux_stream", vec![suffix]);
+              guest.set_witness("merkle_leaf_rows", vec![leaf_rows]);
+              guest.set_witness("merkle_paths", vec![paths]);
+
+              let public = [F192::ZERO, F192::ZERO];
+              let (proof, _) = prove(&guest, public, LOG_INV_RATE);
+              verify(&guest, &public, &proof).expect("in-circuit ProgramVK bytecode opening verifies");
+
+              println!("PROGRAM_VK_LOG_N={LOG_N}");
+              println!("PROGRAM_VK_HASH={}", vk.iter().map(|b| format!("{b:02x}")).collect::<String>());
+              println!("PROGRAM_VK_SUBSTITUTION_REJECTED=true");
+              println!("NATIVE_PROGRAM_VK_OPENING_PASS=true");
+              println!("IN_CIRCUIT_PROGRAM_VK_OPENING_PASS=true");
+              println!("CUSTOM_CLOSURE_GUEST_INSTRUCTIONS={}", guest.prog.len());
+          }
+          RS
+
+          # The example needs the RawProof type from the workspace crate that rec_aggregation already uses.
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('crates/rec_aggregation/Cargo.toml')
+          s = p.read_text()
+          if 'fiat_shamir.workspace = true' not in s:
+              marker = '[dependencies]\n'
+              assert marker in s
+              s = s.replace(marker, marker + 'fiat_shamir.workspace = true\n', 1)
+              p.write_text(s)
+          PY
+
+      - name: Compile, prove, and verify the ProgramVK opening inside a leanVM guest
+        working-directory: leanVM
+        env:
+          ZK_ALLOC_POISON: "1"
+        run: cargo run --release -p rec_aggregation --example ps_in_circuit_program_vk
