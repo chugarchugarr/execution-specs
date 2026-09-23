@@ -1,4 +1,5 @@
-"""Try to falsify fork-local EIP-8198 re-parameterisation.
+"""
+Try to falsify fork-local EIP-8198 re-parameterisation.
 
 The schedule-driven implementation is the behavioral oracle. The competitor
 contains no runtime duration schedule: each synthetic fork has only fixed EL
@@ -6,11 +7,10 @@ constants. If fixed constants cannot reproduce an invariant, this suite should
 expose the first counterexample.
 """
 
-from fractions import Fraction
 import inspect
+from fractions import Fraction
 
 import pytest
-from ethereum_types.numeric import U64, Uint
 
 from ethereum.forks.amsterdam.fork import calculate_base_fee_per_gas
 from ethereum.forks.amsterdam.slot_timing import (
@@ -23,6 +23,7 @@ from ethereum.forks.amsterdam.slot_timing import (
     scale_blob_schedule,
     scale_transition_limit,
 )
+from ethereum_types.numeric import U64, Uint
 
 from . import fork_local_competitor as local
 
@@ -60,7 +61,9 @@ def _rate_error(value: int, period_ms: int, baseline: Fraction) -> Fraction:
 
 
 def test_competitor_has_no_runtime_schedule_dependency() -> None:
-    """The competing runtime model contains no schedule/slot/epoch machinery."""
+    """
+    Confirm that the competing runtime model has no schedule machinery.
+    """
     fields = tuple(local.ForkLocalELParameters.__dataclass_fields__)
     assert fields == (
         "gas_limit_target",
@@ -132,7 +135,9 @@ def test_fork_local_blob_constants_can_match_schedule_oracle(
     slot: U64,
     parameters: local.ForkLocalELParameters,
 ) -> None:
-    """A fork can carry the same blob constants without runtime schedule lookup."""
+    """
+    Confirm a fork can carry matching blob constants without runtime lookup.
+    """
     oracle = get_blob_schedule(slot, ORACLE_SCHEDULE)
     assert _blob_parameters(parameters) == oracle
 
@@ -172,7 +177,8 @@ def test_direct_baseline_blob_constants_are_not_blocked_by_rounding(
     duration_ms: int,
     sequential: local.ForkLocalELParameters,
 ) -> None:
-    """Discrete blob rounding does not force the EL to own duration history.
+    """
+    Show that discrete blob rounding does not require duration history.
 
     A fork may choose explicit constants against the original wall-clock
     objective rather than mechanically carrying forward sequential rounding.
@@ -218,8 +224,15 @@ def test_direct_baseline_blob_constants_are_not_blocked_by_rounding(
 
 
 def test_schedule_free_competitor_covers_every_oracle_era() -> None:
-    """The experiment has a fixed EL snapshot for every oracle duration era."""
-    assert tuple(case[0] for case in ERA_CASES) == (12_000, 10_000, 8_000, 6_000)
+    """
+    Confirm a fixed EL snapshot exists for every oracle duration era.
+    """
+    assert tuple(case[0] for case in ERA_CASES) == (
+        12_000,
+        10_000,
+        8_000,
+        6_000,
+    )
     assert tuple(case[2].gas_limit_target for case in ERA_CASES) == (
         Uint(72_000_000),
         Uint(60_000_000),
