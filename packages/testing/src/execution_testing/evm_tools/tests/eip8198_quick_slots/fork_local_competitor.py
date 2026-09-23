@@ -1,4 +1,5 @@
-"""Schedule-free EIP-8198 execution-layer competitor.
+"""
+Schedule-free EIP-8198 execution-layer competitor.
 
 Each synthetic fork carries only the execution constants needed by that fork.
 There is no runtime slot-duration schedule, epoch lookup, or slot lookup here.
@@ -7,9 +8,8 @@ There is no runtime slot-duration schedule, epoch lookup, or slot lookup here.
 from dataclasses import dataclass
 from typing import Final, final
 
-from ethereum_types.numeric import U64, Uint
-
 from ethereum.utils.numeric import taylor_exponential
+from ethereum_types.numeric import U64, Uint
 
 ELASTICITY_MULTIPLIER: Final[Uint] = Uint(2)
 BLOB_MIN_GASPRICE: Final[Uint] = Uint(1)
@@ -71,7 +71,9 @@ def calculate_fork_local_base_fee(
     parent_base_fee_per_gas: Uint,
     parameters: ForkLocalELParameters,
 ) -> Uint:
-    """Calculate base fee using only constants compiled into the active fork."""
+    """
+    Calculate base fee using only constants compiled into the active fork.
+    """
     parent_gas_target = parent_gas_limit // ELASTICITY_MULTIPLIER
 
     if parent_gas_used == parent_gas_target:
@@ -104,7 +106,9 @@ def calculate_fork_local_blob_price(
     excess_blob_gas: U64,
     parameters: ForkLocalELParameters,
 ) -> Uint:
-    """Calculate blob price using only constants compiled into the active fork."""
+    """
+    Calculate blob price using only constants compiled into the active fork.
+    """
     return taylor_exponential(
         BLOB_MIN_GASPRICE,
         Uint(excess_blob_gas),
