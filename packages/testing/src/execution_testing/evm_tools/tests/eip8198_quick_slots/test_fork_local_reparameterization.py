@@ -11,7 +11,6 @@ import inspect
 from fractions import Fraction
 
 import pytest
-
 from ethereum.forks.amsterdam.fork import calculate_base_fee_per_gas
 from ethereum.forks.amsterdam.slot_timing import (
     BASE_BLOB_SCHEDULE,
