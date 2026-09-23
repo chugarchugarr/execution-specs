@@ -1,0 +1,29 @@
+name: EIP-8198 Fork-Local Falsifier
+
+on:
+  pull_request:
+    paths:
+      - "packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/**"
+      - ".github/workflows/eip8198-fork-local-falsifier.yaml"
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-uv
+      - name: Ruff check
+        run: >
+          uv run ruff check
+          packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/fork_local_competitor.py
+          packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/test_fork_local_reparameterization.py
+      - name: Ruff format check
+        run: >
+          uv run ruff format --check
+          packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/fork_local_competitor.py
+          packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/test_fork_local_reparameterization.py
+      - name: Focused falsification suite
+        run: >
+          uv run pytest -q
+          packages/testing/src/execution_testing/evm_tools/tests/eip8198_quick_slots/test_fork_local_reparameterization.py
